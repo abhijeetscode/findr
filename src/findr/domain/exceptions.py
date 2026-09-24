@@ -16,3 +16,13 @@ class ConnectionNotFound(DomainError):
 
 class SourceAuthError(DomainError):
     """Raised by a SourceConnector when stored credentials are invalid or expired."""
+
+
+class InvalidOAuthState(DomainError):
+    """Raised when an OAuth callback's state doesn't match a known, unexpired request."""
+
+
+class SourceCursorExpired(DomainError):
+    """Raised by a SourceConnector when its incremental sync cursor is too old
+    to resume from (e.g. Gmail only retains ~7 days of history) — the caller
+    should fall back to a full resync (cursor=None)."""
