@@ -1,0 +1,35 @@
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """App configuration, loaded from environment variables (and .env in dev).
+
+    Env var names intentionally don't share one prefix: FINDR_* for
+    Findr-internal config, GOOGLE_OAUTH_* for values that name a Google Cloud
+    OAuth client. See .env.example.
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    database_path: str = Field(default="findr.db", validation_alias="FINDR_DATABASE_PATH")
+    session_secret: str = Field(
+        default="dev-only-change-me", validation_alias="FINDR_SESSION_SECRET"
+    )
+    token_encryption_key: str = Field(
+        default="", validation_alias="FINDR_TOKEN_ENCRYPTION_KEY"
+    )
+    sync_interval_seconds: int = Field(
+        default=300, validation_alias="FINDR_SYNC_INTERVAL_SECONDS"
+    )
+    environment: str = Field(default="development", validation_alias="FINDR_ENV")
+    session_ttl_days: int = Field(default=14, validation_alias="FINDR_SESSION_TTL_DAYS")
+
+    google_oauth_client_id: str = Field(default="", validation_alias="GOOGLE_OAUTH_CLIENT_ID")
+    google_oauth_client_secret: str = Field(
+        default="", validation_alias="GOOGLE_OAUTH_CLIENT_SECRET"
+    )
+    google_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/sources/gmail/callback",
+        validation_alias="GOOGLE_OAUTH_REDIRECT_URI",
+    )

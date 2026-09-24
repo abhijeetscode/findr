@@ -13,8 +13,22 @@ FastAPI-based project.
 uv sync
 ```
 
+## Configuration
+
+Copy `.env.example` to `.env` and fill in real values before running:
+
+```bash
+cp .env.example .env
+```
+
 ## Run
 
 ```bash
-uv run findr
+uv run fastapi dev src/findr/app.py
+```
+
+## Tests
+
+```bash
+uv run pytest
 ```

@@ -1,0 +1,7 @@
+-- Findr SQLite schema.
+--
+-- Tables are added incrementally as each part of the Gmail-connector spec
+-- (specs/gmail-connector.md) is implemented:
+--   1. users, sessions                         -- user auth
+--   2. documents, documents_fts (+ triggers)    -- search core
+--   3. source_connections, oauth_states         -- Gmail OAuth connect

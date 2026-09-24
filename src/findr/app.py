@@ -1,20 +1,8 @@
-from pathlib import Path
+"""ASGI entrypoint. The real composition root lives in
+adapters/inbound/http/app.py; this re-export just keeps
+`findr.app:app` / `fastapi dev src/findr/app.py` working as the run target.
+"""
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from findr.adapters.inbound.http.app import app
 
-app = FastAPI()
-
-STATIC_DIR = Path(__file__).parent
-INDEX_HTML = STATIC_DIR / "Unified Search Interface.html"
-
-
-@app.get("/")
-async def index():
-    return FileResponse(INDEX_HTML)
-
-
-@app.get("/healthz")
-async def healthz():
-    return {"error": False}
-
+__all__ = ["app"]
