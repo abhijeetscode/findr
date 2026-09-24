@@ -1,6 +1,6 @@
 # Spec: Connect Gmail as a Data Source
 
-Status: **Draft — agreed, not yet implemented**
+Status: **Implemented** (steps 1-6 of the sequence in section 11; UI wiring, step 7, remains a deferred follow-up). Requires a real `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`FINDR_TOKEN_ENCRYPTION_KEY` in `.env` before a real Gmail account can be connected end-to-end — see section 9.
 Owner: findr
 Related: `CLAUDE.md` (project goal, hexagonal architecture, spec-driven development)
 
@@ -92,9 +92,15 @@ class PasswordHasher(Protocol):
     def verify(self, plaintext: str, hashed: str) -> bool: ...
 
 class SourceConnectionRepository(Protocol):
-    def create(self, user_id: int, source_type: SourceType) -> SourceConnection: ...
+    # external_account added to create() (and get_by_account()/list_active()
+    # added) once implementation showed the flow needs to look up "is this
+    # Gmail address already connected for this user" and "all active
+    # connections across all users" (the latter for the scheduler tick).
+    def create(self, user_id: int, source_type: SourceType, external_account: str) -> SourceConnection: ...
     def get(self, connection_id: int, user_id: int) -> SourceConnection | None: ...
+    def get_by_account(self, user_id: int, source_type: SourceType, external_account: str) -> SourceConnection | None: ...
     def list_for_user(self, user_id: int) -> list[SourceConnection]: ...
+    def list_active(self) -> list[SourceConnection]: ...
     def update_status(self, connection_id: int, status: ConnectionStatus, last_error: str | None = None) -> None: ...
     def update_cursor(self, connection_id: int, cursor: str, synced_at: datetime) -> None: ...
 
@@ -108,6 +114,19 @@ class OAuthProvider(Protocol):
     def exchange_code(self, code: str, code_verifier: str) -> Credentials: ...
     def refresh(self, refresh_token: str) -> Credentials: ...
     def revoke(self, token: str) -> None: ...
+    def get_account_email(self, access_token: str) -> str: ...  # which account got connected
+
+# oauth_states needs its own port too (not just a table) — the use case
+# needs to create a pending request and later do a one-time-use lookup.
+class OAuthState:
+    state: str
+    user_id: int
+    code_verifier: str
+    expires_at: datetime
+
+class OAuthStateRepository(Protocol):
+    def create(self, user_id: int, code_verifier: str, ttl_seconds: int) -> str: ...  # returns state
+    def consume(self, state: str) -> OAuthState | None: ...  # one-time read: deletes on read either way
 
 class ChangeBatch:
     upserts: list[Document]
@@ -138,7 +157,7 @@ One per file under `application/`, each a small class/function constructor-injec
 - `sources/connect_gmail.py` — `BeginGmailConnect(oauth_provider, connection_repo, oauth_state_repo).execute(user_id) -> authorize_url`; `CompleteGmailConnect(oauth_provider, connection_repo, credential_store, oauth_state_repo).execute(code, state) -> SourceConnection`.
 - `sources/list_connections.py` — `ListConnections(connection_repo).execute(user_id) -> list[SourceConnection]`.
 - `sources/disconnect_source.py` — `DisconnectSource(connection_repo, credential_store, oauth_provider).execute(connection_id, user_id)` — revokes token, deletes credentials, marks connection `DISCONNECTED`.
-- `sync/sync_source.py` — `SyncSource(connector, credential_store, connection_repo, document_repo).execute(connection: SourceConnection)` — generic over `SourceConnector`, works for Gmail now and any future connector unchanged. Catches `SourceAuthError` → sets `NEEDS_REAUTH`; catches other exceptions → sets `ERROR` with `last_error`, without raising (isolates one connection's failure from the sync loop).
+- `sync/sync_source.py` — `SyncSource(connector, oauth_provider, credential_store, connection_repo, document_repo, clock).execute(connection: SourceConnection)` — generic over `SourceConnector`, works for Gmail now and any future connector unchanged. `oauth_provider`/`clock` were added once implementation showed the use case must proactively refresh an expired access token (via the stored refresh token) *before* syncing, not just react to a 401 — otherwise every sync would immediately fail with `NEEDS_REAUTH` once the hour-long access token expired, even with a perfectly valid week-long refresh token. Catches `SourceCursorExpired` → retries once with `cursor=None` (full resync). Catches `SourceAuthError` → sets `NEEDS_REAUTH`; catches other exceptions → sets `ERROR` with `last_error`, without raising (isolates one connection's failure from the sync loop).
 - `search/search_documents.py` — `SearchDocuments(search_index).execute(user_id, query) -> list[SearchHit]`.
 
 ## 5. Auth design
