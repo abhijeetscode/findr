@@ -50,6 +50,7 @@ class SourceConnectionModel(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     source_type: Mapped[str]
     external_account: Mapped[str | None]
+    display_name: Mapped[str | None]
     status: Mapped[str] = mapped_column(index=True)
     access_token_enc: Mapped[bytes | None]
     refresh_token_enc: Mapped[bytes | None]

@@ -33,3 +33,17 @@ class Settings(BaseSettings):
         default="http://localhost:8000/sources/gmail/callback",
         validation_alias="GOOGLE_OAUTH_REDIRECT_URI",
     )
+
+    slack_client_id: str = Field(default="", validation_alias="SLACK_CLIENT_ID")
+    slack_client_secret: str = Field(default="", validation_alias="SLACK_CLIENT_SECRET")
+    slack_redirect_uri: str = Field(
+        default="http://localhost:8000/sources/slack/callback",
+        validation_alias="SLACK_REDIRECT_URI",
+    )
+
+    notion_client_id: str = Field(default="", validation_alias="NOTION_CLIENT_ID")
+    notion_client_secret: str = Field(default="", validation_alias="NOTION_CLIENT_SECRET")
+    notion_redirect_uri: str = Field(
+        default="http://localhost:8000/sources/notion/callback",
+        validation_alias="NOTION_REDIRECT_URI",
+    )

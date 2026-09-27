@@ -79,14 +79,20 @@ class GmailOAuthProvider:
         # the one we already have unless a new one is issued.
         return self._credentials_from_response(response, fallback_refresh_token=refresh_token)
 
-    def revoke(self, token: str) -> None:
-        httpx.post(REVOKE_URL, data={"token": token})
+    def revoke(self, credentials: Credentials) -> None:
+        # Revoking the refresh token revokes the whole grant (both tokens);
+        # revoking only the access token would not.
+        httpx.post(REVOKE_URL, data={"token": credentials.refresh_token})
 
     def get_account_email(self, access_token: str) -> str:
         response = httpx.get(USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
         if response.status_code != 200:
             raise SourceAuthError(f"Failed to fetch Gmail account info: {response.text}")
         return response.json()["email"]
+
+    def get_display_name(self, access_token: str) -> str:
+        # The email address is already a friendly label for Gmail.
+        return self.get_account_email(access_token)
 
     def _credentials_from_response(
         self, response: httpx.Response, fallback_refresh_token: str | None = None

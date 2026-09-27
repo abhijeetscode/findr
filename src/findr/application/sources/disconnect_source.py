@@ -23,6 +23,6 @@ class DisconnectSource:
 
         credentials = self._credential_store.get(connection_id)
         if credentials is not None:
-            self._oauth_provider.revoke(credentials.refresh_token)
+            self._oauth_provider.revoke(credentials)
         self._credential_store.delete(connection_id)
         self._connection_repo.update_status(connection_id, ConnectionStatus.DISCONNECTED)

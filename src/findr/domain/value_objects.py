@@ -3,6 +3,8 @@ from enum import Enum
 
 class SourceType(str, Enum):
     GMAIL = "gmail"
+    SLACK = "slack"
+    NOTION = "notion"
 
 
 class ConnectionStatus(str, Enum):

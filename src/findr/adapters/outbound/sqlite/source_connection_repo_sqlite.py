@@ -20,12 +20,17 @@ class SourceConnectionRepositorySqlite:
         self._clock = clock or SystemClock()
 
     def create(
-        self, user_id: int, source_type: SourceType, external_account: str
+        self,
+        user_id: int,
+        source_type: SourceType,
+        external_account: str,
+        display_name: str | None = None,
     ) -> SourceConnection:
         row = SourceConnectionModel(
             user_id=user_id,
             source_type=source_type.value,
             external_account=external_account,
+            display_name=display_name,
             status=ConnectionStatus.ACTIVE.value,
             access_token_enc=None,
             refresh_token_enc=None,
@@ -97,6 +102,13 @@ class SourceConnectionRepositorySqlite:
         row.last_synced_at = synced_at
         self._db.flush()
 
+    def update_display_name(self, connection_id: int, display_name: str) -> None:
+        row = self._db.get(SourceConnectionModel, connection_id)
+        if row is None:
+            return
+        row.display_name = display_name
+        self._db.flush()
+
 
 def _to_domain(row: SourceConnectionModel) -> SourceConnection:
     return SourceConnection(
@@ -104,6 +116,7 @@ def _to_domain(row: SourceConnectionModel) -> SourceConnection:
         user_id=row.user_id,
         source_type=SourceType(row.source_type),
         external_account=row.external_account,
+        display_name=row.display_name,
         status=ConnectionStatus(row.status),
         sync_cursor=row.sync_cursor,
         last_synced_at=row.last_synced_at,

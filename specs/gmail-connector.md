@@ -72,6 +72,8 @@ class SearchHit:
 
 `domain/exceptions.py`: `InvalidCredentials`, `DuplicateUser`, `ConnectionNotFound`, `SourceAuthError` (raised when a connector's stored credentials are invalid/expired — the application layer catches this and transitions a connection to `NEEDS_REAUTH`).
 
+**Addendum (added alongside the Slack/Notion connectors, see their specs §5):** `SourceConnection` gained a `display_name: str | None = None` field, separate from `external_account`. For Gmail the two are the same (an email address is already a friendly label), so Gmail's `CompleteGmailConnect` just passes the email for both — this field exists because Slack's/Notion's dedup keys (`team_id:user_id`, a workspace UUID) aren't human-readable on their own.
+
 ## 3. Ports (interfaces)
 
 All in `ports/`, defined as `typing.Protocol` (or ABC), imported and implemented only by `adapters/`. Application-layer use cases depend on these, never on concrete adapters.

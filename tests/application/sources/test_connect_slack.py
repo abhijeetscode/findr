@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from findr.application.sources.connect_gmail import BeginGmailConnect, CompleteGmailConnect
+from findr.application.sources.connect_slack import BeginSlackConnect, CompleteSlackConnect
 from findr.domain.entities import Credentials, SourceConnection
 from findr.domain.exceptions import InvalidOAuthState
 from findr.domain.value_objects import ConnectionStatus
@@ -17,7 +17,7 @@ class FakeOAuthProvider:
 
     def build_authorize_url(self, state: str, code_challenge: str) -> str:
         self.built_urls.append((state, code_challenge))
-        return f"https://accounts.google.com/o/oauth2/v2/auth?state={state}"
+        return f"https://slack.com/oauth/v2/authorize?state={state}"
 
     def exchange_code(self, code: str, code_verifier: str) -> Credentials:
         return Credentials(
@@ -29,14 +29,14 @@ class FakeOAuthProvider:
     def refresh(self, refresh_token: str) -> Credentials:
         raise NotImplementedError
 
-    def revoke(self, token: str) -> None:
+    def revoke(self, credentials: Credentials) -> None:
         pass
 
     def get_account_email(self, access_token: str) -> str:
-        return "someone@gmail.com"
+        return "T12345:U67890"
 
     def get_display_name(self, access_token: str) -> str:
-        return "someone@gmail.com"
+        return "Acme Corp (Ada Lovelace)"
 
 
 class FakeOAuthStateRepository:
@@ -161,36 +161,40 @@ class FakeCredentialStore:
         self._creds.pop(connection_id, None)
 
 
-def test_begin_gmail_connect_returns_authorize_url():
+def test_begin_slack_connect_returns_authorize_url_without_pkce():
     oauth_provider = FakeOAuthProvider()
-    use_case = BeginGmailConnect(oauth_provider, FakeOAuthStateRepository())
+    oauth_states = FakeOAuthStateRepository()
+    use_case = BeginSlackConnect(oauth_provider, oauth_states)
 
     url = use_case.execute(user_id=1)
 
-    assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?state=")
+    assert url.startswith("https://slack.com/oauth/v2/authorize?state=")
     assert len(oauth_provider.built_urls) == 1
+    state, code_challenge = oauth_provider.built_urls[0]
+    assert code_challenge == ""  # no PKCE for Slack
 
 
-def test_complete_gmail_connect_creates_connection_and_saves_credentials():
+def test_complete_slack_connect_creates_connection_keyed_by_team_and_user():
     oauth_provider = FakeOAuthProvider()
     oauth_states = FakeOAuthStateRepository()
     connection_repo = FakeSourceConnectionRepository()
     credential_store = FakeCredentialStore()
 
-    authorize_url = BeginGmailConnect(oauth_provider, oauth_states).execute(user_id=42)
+    authorize_url = BeginSlackConnect(oauth_provider, oauth_states).execute(user_id=42)
     state = authorize_url.rsplit("state=", 1)[1]
 
-    complete = CompleteGmailConnect(oauth_provider, oauth_states, connection_repo, credential_store)
+    complete = CompleteSlackConnect(oauth_provider, oauth_states, connection_repo, credential_store)
     connection = complete.execute(code="valid-code", state=state)
 
     assert connection.user_id == 42
-    assert connection.external_account == "someone@gmail.com"
+    assert connection.external_account == "T12345:U67890"
+    assert connection.display_name == "Acme Corp (Ada Lovelace)"
     assert connection.status == ConnectionStatus.ACTIVE
     assert credential_store.get(connection.id).access_token == "access-for-valid-code"
 
 
-def test_complete_gmail_connect_rejects_unknown_state():
-    use_case = CompleteGmailConnect(
+def test_complete_slack_connect_rejects_unknown_state():
+    use_case = CompleteSlackConnect(
         FakeOAuthProvider(),
         FakeOAuthStateRepository(),
         FakeSourceConnectionRepository(),
@@ -201,15 +205,15 @@ def test_complete_gmail_connect_rejects_unknown_state():
         use_case.execute(code="valid-code", state="never-issued")
 
 
-def test_complete_gmail_connect_reuses_existing_connection_on_reconnect():
+def test_complete_slack_connect_reuses_existing_connection_on_reconnect():
     oauth_provider = FakeOAuthProvider()
     oauth_states = FakeOAuthStateRepository()
     connection_repo = FakeSourceConnectionRepository()
     credential_store = FakeCredentialStore()
 
     def do_connect():
-        state = oauth_states.create(user_id=7, code_verifier="verifier", ttl_seconds=600)
-        complete = CompleteGmailConnect(
+        state = oauth_states.create(user_id=7, code_verifier="", ttl_seconds=600)
+        complete = CompleteSlackConnect(
             oauth_provider, oauth_states, connection_repo, credential_store
         )
         return complete.execute(code="valid-code", state=state)

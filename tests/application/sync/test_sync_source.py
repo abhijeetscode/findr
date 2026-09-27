@@ -53,6 +53,9 @@ class FakeOAuthProvider:
     def get_account_email(self, access_token):
         raise NotImplementedError
 
+    def get_display_name(self, access_token):
+        raise NotImplementedError
+
 
 class FakeSourceConnectionRepository:
     def __init__(self) -> None:
@@ -79,6 +82,9 @@ class FakeSourceConnectionRepository:
 
     def update_cursor(self, connection_id, cursor, synced_at) -> None:
         self.cursor_updates.append((connection_id, cursor, synced_at))
+
+    def update_display_name(self, *a, **k):
+        raise NotImplementedError
 
 
 class FakeDocumentRepository:

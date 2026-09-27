@@ -79,6 +79,26 @@ def test_source_connection_create_get_and_status_lifecycle(db_session):
     assert active[0].last_error is None  # cleared on returning to ACTIVE
 
 
+def test_source_connection_display_name_round_trip(db_session):
+    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
+    db_session.commit()
+    repo = SourceConnectionRepositorySqlite(db_session)
+
+    connection = repo.create(user.id, SourceType.SLACK, "T1:U1", "Acme Corp (Ada)")
+    db_session.commit()
+    assert repo.get(connection.id, user.id).display_name == "Acme Corp (Ada)"
+
+    repo.update_display_name(connection.id, "Acme Corp (Ada Lovelace)")
+    db_session.commit()
+    assert repo.get(connection.id, user.id).display_name == "Acme Corp (Ada Lovelace)"
+
+    # update_status/update_cursor must not clobber the display name.
+    repo.update_status(connection.id, ConnectionStatus.NEEDS_REAUTH)
+    repo.update_cursor(connection.id, "cursor-1", datetime(2024, 1, 1))
+    db_session.commit()
+    assert repo.get(connection.id, user.id).display_name == "Acme Corp (Ada Lovelace)"
+
+
 def test_credential_store_encrypts_tokens_at_rest(db_session):
     user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
     db_session.commit()

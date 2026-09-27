@@ -25,6 +25,13 @@ class SourceConnection:
     last_synced_at: datetime | None
     last_error: str | None
     created_at: datetime
+    # Human-readable label for display (e.g. "acme-corp (ada@acme.com)" for
+    # Slack, a workspace name for Notion). Separate from external_account,
+    # which is the dedup key used by get_by_account() and may not be
+    # friendly on its own (a Slack "{team_id}:{user_id}" pair, a Notion
+    # workspace_id UUID). None for connectors where external_account is
+    # already friendly (Gmail's email address).
+    display_name: str | None = None
 
 
 @dataclass
