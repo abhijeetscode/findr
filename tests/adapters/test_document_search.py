@@ -69,6 +69,7 @@ def test_search_is_isolated_per_user(db_session):
 
     assert len(a_hits) == 1
     assert a_hits[0].document.user_id == user_a.id
+    assert a_hits[0].source_type == SourceType.GMAIL
     assert len(b_hits) == 1
     assert b_hits[0].document.user_id == user_b.id
 

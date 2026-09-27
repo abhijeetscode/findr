@@ -137,7 +137,7 @@ def gmail_callback(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     db.commit()
-    return RedirectResponse("/sources", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
 
 
 @router.get("/slack/connect")
@@ -176,7 +176,7 @@ def slack_callback(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     db.commit()
-    return RedirectResponse("/sources", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
 
 
 @router.get("/notion/connect")
@@ -215,7 +215,7 @@ def notion_callback(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     db.commit()
-    return RedirectResponse("/sources", status_code=status.HTTP_302_FOUND)
+    return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
 
 
 @router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)

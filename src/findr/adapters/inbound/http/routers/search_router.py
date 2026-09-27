@@ -12,8 +12,10 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 class SearchHitResponse(BaseModel):
     document_id: int
+    source_type: str
     subject: str | None
     sender: str | None
+    recipients: str | None
     snippet: str
     score: float
     sent_at: str | None
@@ -35,8 +37,10 @@ def search(
         results=[
             SearchHitResponse(
                 document_id=hit.document.id,
+                source_type=hit.source_type.value,
                 subject=hit.document.subject,
                 sender=hit.document.sender,
+                recipients=hit.document.recipients,
                 snippet=hit.snippet,
                 score=hit.score,
                 sent_at=hit.document.sent_at.isoformat() if hit.document.sent_at else None,

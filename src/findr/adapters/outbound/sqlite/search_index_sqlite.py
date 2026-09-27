@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session as DbSession
 
 from findr.domain.entities import Document, SearchHit
+from findr.domain.value_objects import SourceType
 
 _TOKEN_RE = re.compile(r"\S+")
 
@@ -13,10 +15,12 @@ _SEARCH_SQL = text(
     """
     SELECT d.id, d.user_id, d.connection_id, d.external_id,
            d.subject, d.sender, d.recipients, d.body_text, d.sent_at,
+           sc.source_type AS source_type,
            snippet(documents_fts, 2, '[', ']', '…', 10) AS snippet,
            bm25(documents_fts) AS rank
     FROM documents_fts
     JOIN documents d ON d.id = documents_fts.rowid
+    JOIN source_connections sc ON sc.id = d.connection_id
     WHERE documents_fts MATCH :query AND d.user_id = :user_id
     ORDER BY rank
     LIMIT 50
@@ -62,9 +66,19 @@ class SearchIndexSqlite:
                 sender=row.sender,
                 recipients=row.recipients,
                 body_text=row.body_text,
-                sent_at=row.sent_at,
+                # A raw text() query bypasses SQLAlchemy's DateTime result
+                # processor, so the driver hands back the stored string
+                # as-is rather than a datetime — parse it explicitly.
+                sent_at=datetime.fromisoformat(row.sent_at) if row.sent_at else None,
             )
             # bm25() is more-negative-is-better; flip sign so a higher
             # SearchHit.score means more relevant.
-            hits.append(SearchHit(document=document, snippet=row.snippet, score=-row.rank))
+            hits.append(
+                SearchHit(
+                    document=document,
+                    snippet=row.snippet,
+                    score=-row.rank,
+                    source_type=SourceType(row.source_type),
+                )
+            )
         return hits

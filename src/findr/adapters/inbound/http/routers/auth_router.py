@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from findr.adapters.inbound.http.deps import (
     SESSION_COOKIE_NAME,
+    get_current_user,
     get_db_session,
     get_settings,
 )
@@ -14,6 +15,7 @@ from findr.application.auth.login_user import LoginUser
 from findr.application.auth.logout_user import LogoutUser
 from findr.application.auth.register_user import RegisterUser
 from findr.config import Settings
+from findr.domain.entities import User
 from findr.domain.exceptions import DuplicateUser, InvalidCredentials
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -75,6 +77,14 @@ def login(
         max_age=settings.session_ttl_days * 24 * 60 * 60,
         path="/",
     )
+    return UserResponse(id=user.id, email=user.email)
+
+
+@router.get("/me", response_model=UserResponse)
+def me(user: User = Depends(get_current_user)) -> UserResponse:
+    """Lets the frontend check for an existing valid session on page load
+    (401 via get_current_user if there isn't one) without duplicating
+    session-lookup logic."""
     return UserResponse(id=user.id, email=user.email)
 
 

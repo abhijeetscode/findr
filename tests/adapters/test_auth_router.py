@@ -33,3 +33,35 @@ def test_register_login_logout_flow(monkeypatch):
 
         logout_resp = client.post("/auth/logout")
         assert logout_resp.status_code == 204
+
+
+def test_me_requires_login(monkeypatch):
+    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+    with TestClient(app) as client:
+        assert client.get("/auth/me").status_code == 401
+
+
+def test_me_returns_current_user_after_login(monkeypatch):
+    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+    with TestClient(app) as client:
+        client.post(
+            "/auth/register", json={"email": "a@example.com", "password": "correct-horse-1"}
+        )
+        client.post("/auth/login", json={"email": "a@example.com", "password": "correct-horse-1"})
+
+        resp = client.get("/auth/me")
+
+        assert resp.status_code == 200
+        assert resp.json()["email"] == "a@example.com"
+
+
+def test_me_returns_401_after_logout(monkeypatch):
+    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+    with TestClient(app) as client:
+        client.post(
+            "/auth/register", json={"email": "a@example.com", "password": "correct-horse-1"}
+        )
+        client.post("/auth/login", json={"email": "a@example.com", "password": "correct-horse-1"})
+        client.post("/auth/logout")
+
+        assert client.get("/auth/me").status_code == 401

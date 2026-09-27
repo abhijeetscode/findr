@@ -52,6 +52,11 @@ class SearchHit:
     document: Document
     snippet: str
     score: float
+    # Which connection's source type this hit came from (Gmail/Slack/
+    # Notion) — lives on SearchHit rather than Document because it's a
+    # property of the connection, not the document itself. Needed so the UI
+    # can render a per-result source badge.
+    source_type: SourceType
 
 
 @dataclass
