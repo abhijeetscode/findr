@@ -4,8 +4,8 @@ from fastapi.testclient import TestClient
 
 from findr.adapters.inbound.http.app import app
 from findr.adapters.inbound.http.routers.sources_router import _to_response
-from findr.adapters.outbound.sqlite.source_connection_repo_sqlite import (
-    SourceConnectionRepositorySqlite,
+from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
+    SourceConnectionRepositoryPostgres,
 )
 from findr.domain.entities import SourceConnection
 from findr.domain.value_objects import ConnectionStatus, SourceType
@@ -44,8 +44,7 @@ def test_to_response_prefers_display_name_when_set():
     assert _to_response(connection).display_name == "Acme Corp (Ada Lovelace)"
 
 
-def test_sources_endpoints_require_login(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_sources_endpoints_require_login(app_env):
     with TestClient(app) as client:
         assert client.get("/sources").status_code == 401
         assert client.get("/sources/gmail/connect", follow_redirects=False).status_code == 401
@@ -54,8 +53,7 @@ def test_sources_endpoints_require_login(monkeypatch):
         assert client.delete("/sources/1").status_code == 401
 
 
-def test_gmail_connect_redirects_to_google_with_pkce_params(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_gmail_connect_redirects_to_google_with_pkce_params(app_env, monkeypatch):
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
@@ -72,8 +70,7 @@ def test_gmail_connect_redirects_to_google_with_pkce_params(monkeypatch):
         assert "prompt=consent" in location
 
 
-def test_slack_connect_redirects_to_slack_with_user_scopes(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_slack_connect_redirects_to_slack_with_user_scopes(app_env, monkeypatch):
     monkeypatch.setenv("SLACK_CLIENT_ID", "test-slack-client-id")
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
@@ -88,8 +85,7 @@ def test_slack_connect_redirects_to_slack_with_user_scopes(monkeypatch):
         assert "state=" in location
 
 
-def test_notion_connect_redirects_to_notion(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_notion_connect_redirects_to_notion(app_env, monkeypatch):
     monkeypatch.setenv("NOTION_CLIENT_ID", "test-notion-client-id")
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
@@ -103,8 +99,7 @@ def test_notion_connect_redirects_to_notion(monkeypatch):
         assert "state=" in location
 
 
-def test_list_sources_returns_empty_before_connecting_anything(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_list_sources_returns_empty_before_connecting_anything(app_env):
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
 
@@ -114,8 +109,7 @@ def test_list_sources_returns_empty_before_connecting_anything(monkeypatch):
         assert resp.json() == []
 
 
-def test_disconnect_unknown_connection_returns_404(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_disconnect_unknown_connection_returns_404(app_env):
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
 
@@ -124,14 +118,12 @@ def test_disconnect_unknown_connection_returns_404(monkeypatch):
         assert resp.status_code == 404
 
 
-def test_resync_requires_login(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_resync_requires_login(app_env):
     with TestClient(app) as client:
         assert client.post("/sources/1/sync").status_code == 401
 
 
-def test_resync_unknown_connection_returns_404(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_resync_unknown_connection_returns_404(app_env):
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
 
@@ -140,8 +132,7 @@ def test_resync_unknown_connection_returns_404(monkeypatch):
         assert resp.status_code == 404
 
 
-def test_resync_disconnected_connection_returns_409(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_resync_disconnected_connection_returns_409(app_env, monkeypatch):
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
@@ -149,7 +140,7 @@ def test_resync_disconnected_connection_returns_409(monkeypatch):
 
         db = app.state.session_factory()
         try:
-            connection_repo = SourceConnectionRepositorySqlite(db)
+            connection_repo = SourceConnectionRepositoryPostgres(db)
             connection = connection_repo.create(user_id, SourceType.GMAIL, "a@gmail.com")
             connection_repo.update_status(connection.id, ConnectionStatus.DISCONNECTED)
             db.commit()

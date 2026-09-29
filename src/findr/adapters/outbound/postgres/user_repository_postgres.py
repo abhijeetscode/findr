@@ -3,13 +3,13 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
-from findr.adapters.outbound.sqlite.models import UserModel
+from findr.adapters.outbound.postgres.models import UserModel
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.domain.entities import User
 from findr.ports.clock import Clock
 
 
-class UserRepositorySqlite:
+class UserRepositoryPostgres:
     """Implements ports.user_repository.UserRepository."""
 
     def __init__(self, db: DbSession, clock: Clock | None = None) -> None:
@@ -17,9 +17,7 @@ class UserRepositorySqlite:
         self._clock = clock or SystemClock()
 
     def get_by_email(self, email: str) -> User | None:
-        row = self._db.execute(
-            select(UserModel).where(UserModel.email == email)
-        ).scalar_one_or_none()
+        row = self._db.execute(select(UserModel).where(UserModel.email == email)).scalar_one_or_none()
         return _to_domain(row) if row is not None else None
 
     def get_by_id(self, user_id: int) -> User | None:

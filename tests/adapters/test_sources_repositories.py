@@ -3,15 +3,15 @@ from datetime import datetime
 from cryptography.fernet import Fernet
 
 from findr.adapters.outbound.crypto.token_cipher import TokenCipher
-from findr.adapters.outbound.sqlite.credential_store_sqlite import CredentialStoreSqlite
-from findr.adapters.outbound.sqlite.models import SourceConnectionModel
-from findr.adapters.outbound.sqlite.oauth_state_repository_sqlite import (
-    OAuthStateRepositorySqlite,
+from findr.adapters.outbound.postgres.credential_store_postgres import CredentialStorePostgres
+from findr.adapters.outbound.postgres.models import SourceConnectionModel
+from findr.adapters.outbound.postgres.oauth_state_repository_postgres import (
+    OAuthStateRepositoryPostgres,
 )
-from findr.adapters.outbound.sqlite.source_connection_repo_sqlite import (
-    SourceConnectionRepositorySqlite,
+from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
+    SourceConnectionRepositoryPostgres,
 )
-from findr.adapters.outbound.sqlite.user_repository_sqlite import UserRepositorySqlite
+from findr.adapters.outbound.postgres.user_repository_postgres import UserRepositoryPostgres
 from findr.domain.value_objects import ConnectionStatus, SourceType
 
 
@@ -24,10 +24,10 @@ class FixedClock:
 
 
 def test_oauth_state_round_trip_is_one_time_use(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
+    user = UserRepositoryPostgres(db_session).create("a@example.com", "hash")
     db_session.commit()
     clock = FixedClock(datetime(2024, 1, 1))
-    repo = OAuthStateRepositorySqlite(db_session, clock=clock)
+    repo = OAuthStateRepositoryPostgres(db_session, clock=clock)
 
     state = repo.create(user_id=user.id, code_verifier="verifier-xyz", ttl_seconds=600)
     db_session.commit()
@@ -42,10 +42,10 @@ def test_oauth_state_round_trip_is_one_time_use(db_session):
 
 
 def test_oauth_state_expired_returns_none(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
+    user = UserRepositoryPostgres(db_session).create("a@example.com", "hash")
     db_session.commit()
     clock = FixedClock(datetime(2024, 1, 1))
-    repo = OAuthStateRepositorySqlite(db_session, clock=clock)
+    repo = OAuthStateRepositoryPostgres(db_session, clock=clock)
     state = repo.create(user_id=user.id, code_verifier="v", ttl_seconds=60)
     db_session.commit()
 
@@ -54,9 +54,9 @@ def test_oauth_state_expired_returns_none(db_session):
 
 
 def test_source_connection_create_get_and_status_lifecycle(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
+    user = UserRepositoryPostgres(db_session).create("a@example.com", "hash")
     db_session.commit()
-    repo = SourceConnectionRepositorySqlite(db_session)
+    repo = SourceConnectionRepositoryPostgres(db_session)
 
     connection = repo.create(user.id, SourceType.GMAIL, "a@gmail.com")
     db_session.commit()
@@ -80,9 +80,9 @@ def test_source_connection_create_get_and_status_lifecycle(db_session):
 
 
 def test_source_connection_display_name_round_trip(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
+    user = UserRepositoryPostgres(db_session).create("a@example.com", "hash")
     db_session.commit()
-    repo = SourceConnectionRepositorySqlite(db_session)
+    repo = SourceConnectionRepositoryPostgres(db_session)
 
     connection = repo.create(user.id, SourceType.SLACK, "T1:U1", "Acme Corp (Ada)")
     db_session.commit()
@@ -100,15 +100,15 @@ def test_source_connection_display_name_round_trip(db_session):
 
 
 def test_credential_store_encrypts_tokens_at_rest(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
+    user = UserRepositoryPostgres(db_session).create("a@example.com", "hash")
     db_session.commit()
-    connection = SourceConnectionRepositorySqlite(db_session).create(
+    connection = SourceConnectionRepositoryPostgres(db_session).create(
         user.id, SourceType.GMAIL, "a@gmail.com"
     )
     db_session.commit()
 
     cipher = TokenCipher(Fernet.generate_key().decode())
-    store = CredentialStoreSqlite(db_session, cipher)
+    store = CredentialStorePostgres(db_session, cipher)
 
     assert store.get(connection.id) is None
 

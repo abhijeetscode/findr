@@ -5,14 +5,14 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
-from findr.adapters.outbound.sqlite.models import SourceConnectionModel
+from findr.adapters.outbound.postgres.models import SourceConnectionModel
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.domain.entities import SourceConnection
 from findr.domain.value_objects import ConnectionStatus, SourceType
 from findr.ports.clock import Clock
 
 
-class SourceConnectionRepositorySqlite:
+class SourceConnectionRepositoryPostgres:
     """Implements ports.source_connection_repo.SourceConnectionRepository."""
 
     def __init__(self, db: DbSession, clock: Clock | None = None) -> None:

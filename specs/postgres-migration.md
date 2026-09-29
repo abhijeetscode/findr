@@ -1,6 +1,6 @@
 # Spec: Migrate Persistence from SQLite to PostgreSQL
 
-Status: **Draft — not yet agreed, not implemented.**
+Status: **Implemented** (`feature/postgres-elasticsearch-migration`) — see the "Deviation found during implementation" notes below for where the build diverged from this spec's original text.
 Owner: findr
 Related: `CLAUDE.md` (hexagonal architecture), `specs/elasticsearch-search.md` (sibling spec — search moves off SQLite in the same cutover, see §1 for why these two aren't independent), `specs/gmail-thread-id.md` (a prerequisite — its `thread_id` column belongs in this spec's initial schema, see §5), all three connector specs (their "Data model (SQLite)" sections describe the schema this spec carries over unchanged).
 
@@ -86,8 +86,10 @@ All six are a SQLAlchemy dialect swap with **no query-logic changes**, except wh
 
 **Adapter-level tests (`tests/adapters/*`) run against a real, dockerized Postgres** — decided explicitly over mocking, since the entire point of an adapter test is verifying real SQL against the real engine (the `document_repository_postgres.py` `ON CONFLICT` rewrite above is exactly the kind of bug this class of test exists to catch).
 
-- `conftest.py`'s `db_session` fixture changes from "create a fresh `:memory:` engine per test" (free isolation) to a **transaction-per-test** pattern against a shared test database (`findr_test`, on the same docker-compose Postgres): open a connection, begin a transaction, bind the session to it, run the test, roll back — the test's writes never persist past it, giving the same per-test isolation SQLite's `:memory:` gave for free. This is a standard, well-documented SQLAlchemy testing pattern, not a new invention.
+- `conftest.py`'s `db_session` fixture changes from "create a fresh `:memory:` engine per test" (free isolation) to a **transaction-per-test** pattern against a shared test database (`findr_test`, on the same docker-compose Postgres): open a connection, begin a transaction, bind the session to it, run the test, roll back — the test's writes never persist past it, giving the same per-test isolation SQLite's `:memory:` gave for free. This is a standard, well-documented SQLAlchemy testing pattern, not a new invention. Concretely, `Session(bind=connection, join_transaction_mode="create_savepoint")`: adapter code under test still calls `session.commit()` freely, but each commit only closes a `SAVEPOINT` nested inside the outer transaction, so the final rollback still discards everything.
 - CI needs Postgres available before running `pytest` — either a service container (GitHub Actions `services:` block) or `docker compose up -d postgres` as a pre-test step. Exact CI wiring is an implementation detail, not a design fork.
+
+**Deviation found during implementation**: the router-level tests (`test_auth_router.py`, `test_search_router.py`, `test_sources_router.py`) boot the whole app via `TestClient(app)`, whose `lifespan` builds its *own* engine/session_factory from `FINDR_DATABASE_URL` — a separate connection from whatever `db_session`'s single wrapped connection holds. The transaction-per-test trick doesn't reach them: a second, independent engine can't see an uncommitted transaction sitting on a different connection. These tests instead use a new `app_env` fixture that (a) points `FINDR_DATABASE_URL`/`FINDR_ELASTICSEARCH_INDEX` at the shared `findr_test` database and a freshly-created, uniquely-named Elasticsearch index, and (b) truncates every Postgres table both before and after the test (`TRUNCATE ... RESTART IDENTITY CASCADE`), since anything committed through the app's own engine is a real commit outside any test-scoped transaction and would otherwise leak into whichever test runs next. `db_session` (savepoint rollback) and `app_env` (truncate) are two different isolation mechanisms for two different classes of test, not redundant — a test can't get app-level isolation from a transaction it isn't inside.
 
 ## 8. Edge cases
 
@@ -106,6 +108,6 @@ All six are a SQLAlchemy dialect swap with **no query-logic changes**, except wh
 
 ## 10. Verification
 
-**Automated**: existing adapter test suite (`tests/adapters/test_sqlite_repositories.py` and friends, renamed/ported to test the Postgres adapters) passes against the dockerized Postgres, including the `document_repository_postgres.py` upsert-on-conflict behavior specifically.
+**Automated**: existing adapter test suite (`tests/adapters/test_sqlite_repositories.py`, renamed to `test_postgres_repositories.py`, and friends) passes against the dockerized Postgres, including the `document_repository_postgres.py` upsert-on-conflict behavior specifically.
 
 **Manual end-to-end**: `docker compose up -d postgres`, set `FINDR_DATABASE_URL` in `.env`, run the app, confirm `init_db()` creates all tables, register/log in (well — log in as the seeded demo account), connect a source, confirm a sync writes rows into Postgres (`psql` or any client), disconnect, reconnect — confirm the same dedup/reconnect behavior already verified against SQLite still holds.

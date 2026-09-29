@@ -4,9 +4,12 @@ from fastapi.testclient import TestClient
 
 from findr.adapters.inbound.http.app import app
 from findr.adapters.inbound.http.routers.search_router import _source_url
-from findr.adapters.outbound.sqlite.document_repository_sqlite import DocumentRepositorySqlite
-from findr.adapters.outbound.sqlite.source_connection_repo_sqlite import (
-    SourceConnectionRepositorySqlite,
+from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
+from findr.adapters.outbound.postgres.document_repository_postgres import (
+    DocumentRepositoryPostgres,
+)
+from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
+    SourceConnectionRepositoryPostgres,
 )
 from findr.domain.entities import Document, SearchHit
 from findr.domain.value_objects import SourceType
@@ -53,46 +56,56 @@ def test_source_url_for_slack_returns_none_without_team_id():
     assert _source_url(hit) is None
 
 
-def test_search_endpoint_requires_login(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_search_endpoint_requires_login(app_env):
     with TestClient(app) as client:
         resp = client.get("/search", params={"q": "renewal"})
         assert resp.status_code == 401
 
 
-def test_search_endpoint_returns_only_the_logged_in_users_documents(monkeypatch):
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def _seed_document(client, user_id: int, *, subject: str, body_text: str, sent_at=None) -> None:
+    # Writes through both stores directly, the way SyncSource would: insert
+    # into Postgres (to get a real, DB-assigned id), then index the
+    # persisted document into the app's own Elasticsearch client/index
+    # (app.state.*, set up by the running app's lifespan) — a document
+    # inserted only into Postgres is invisible to /search, since there's no
+    # trigger keeping Elasticsearch in sync the way SQLite FTS5 had.
+    db = app.state.session_factory()
+    try:
+        connection = SourceConnectionRepositoryPostgres(db).create(
+            user_id, SourceType.GMAIL, "a@gmail.com"
+        )
+        db.commit()
+        persisted = DocumentRepositoryPostgres(db).upsert_many(
+            [
+                Document(
+                    id=0,
+                    user_id=user_id,
+                    connection_id=connection.id,
+                    external_id="msg-1",
+                    subject=subject,
+                    sender="x@y.com",
+                    recipients="Inbox",
+                    body_text=body_text,
+                    sent_at=sent_at,
+                )
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    search_index = ElasticsearchIndex(app.state.es_client, app.state.settings.elasticsearch_index)
+    search_index.index_documents(persisted, SourceType.GMAIL, "a@gmail.com")
+
+
+def test_search_endpoint_returns_only_the_logged_in_users_documents(app_env):
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
         user_id = client.get("/auth/me").json()["id"]
 
-        # Insert directly through the repository, against the same
-        # in-memory engine the app's lifespan created (StaticPool keeps it
-        # shared across sessions).
-        db = app.state.session_factory()
-        try:
-            connection = SourceConnectionRepositorySqlite(db).create(
-                user_id, SourceType.GMAIL, "a@gmail.com"
-            )
-            db.commit()
-            DocumentRepositorySqlite(db).upsert_many(
-                [
-                    Document(
-                        id=0,
-                        user_id=user_id,
-                        connection_id=connection.id,
-                        external_id="msg-1",
-                        subject="Q3 renewal terms",
-                        sender="x@y.com",
-                        recipients="Inbox",
-                        body_text="please review the renewal terms",
-                        sent_at=None,
-                    )
-                ]
-            )
-            db.commit()
-        finally:
-            db.close()
+        _seed_document(
+            client, user_id, subject="Q3 renewal terms", body_text="please review the renewal terms"
+        )
 
         resp = client.get("/search", params={"q": "renewal"})
         assert resp.status_code == 200
@@ -102,42 +115,24 @@ def test_search_endpoint_returns_only_the_logged_in_users_documents(monkeypatch)
         assert results[0]["source_type"] == "gmail"
         assert results[0]["recipients"] == "Inbox"
         assert results[0]["url"] == "https://mail.google.com/mail/u/0/#all/msg-1"
+        # The frontend's renderSnippet() JS turns "[" / "]" into <strong>
+        # tags — pins the end-to-end highlight response shape, not just the
+        # adapter-level ES config.
+        assert "[renewal]" in results[0]["snippet"].lower()
 
 
-def test_search_endpoint_serializes_documents_with_a_sent_at_timestamp(monkeypatch):
-    # Regression test: the search query is raw SQL (text()), which bypasses
-    # SQLAlchemy's DateTime result processor, so a document with a non-null
-    # sent_at previously came back as a plain string and crashed
-    # `.isoformat()` in the router with a 500.
-    monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
+def test_search_endpoint_serializes_documents_with_a_sent_at_timestamp(app_env):
     with TestClient(app) as client:
         client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
         user_id = client.get("/auth/me").json()["id"]
 
-        db = app.state.session_factory()
-        try:
-            connection = SourceConnectionRepositorySqlite(db).create(
-                user_id, SourceType.GMAIL, "a@gmail.com"
-            )
-            db.commit()
-            DocumentRepositorySqlite(db).upsert_many(
-                [
-                    Document(
-                        id=0,
-                        user_id=user_id,
-                        connection_id=connection.id,
-                        external_id="msg-1",
-                        subject="Q3 renewal terms",
-                        sender="x@y.com",
-                        recipients="Inbox",
-                        body_text="please review the renewal terms",
-                        sent_at=datetime(2026, 9, 20, 14, 30, 0),
-                    )
-                ]
-            )
-            db.commit()
-        finally:
-            db.close()
+        _seed_document(
+            client,
+            user_id,
+            subject="Q3 renewal terms",
+            body_text="please review the renewal terms",
+            sent_at=datetime(2026, 9, 20, 14, 30, 0),
+        )
 
         resp = client.get("/search", params={"q": "renewal"})
 

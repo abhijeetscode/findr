@@ -1,6 +1,6 @@
 # Spec: Migrate Search from SQLite FTS5 to Elasticsearch
 
-Status: **Draft — not yet agreed, not implemented.**
+Status: **Implemented** (`feature/postgres-elasticsearch-migration`) — see the "Deviation"/"Found during implementation"/"Correction" notes below for where the build diverged from this spec's original text.
 Owner: findr
 Related: `CLAUDE.md` ("Search" principle: keep indexing/retrieval behind a port so semantic search can be added later without touching domain/use-case code — this spec is that plan being executed), `specs/postgres-migration.md` (sibling spec — Postgres becomes the system of record in the same cutover; this spec covers the search-index side), `specs/gmail-thread-id.md` (a prerequisite — its `thread_id` field belongs in this spec's mapping, see §4).
 
@@ -30,11 +30,13 @@ This also sets up the explicitly-planned future phase: semantic search via docum
 ```python
 class SearchIndex(Protocol):
     def search(self, user_id: int, query: str) -> list[SearchHit]: ...
-    def index_documents(self, documents: list[Document]) -> None: ...
+    def index_documents(
+        self, documents: list[Document], source_type: SourceType, external_account: str | None
+    ) -> None: ...
     def delete_documents(self, connection_id: int, external_ids: list[str]) -> None: ...
 ```
 
-`index_documents`/`delete_documents` intentionally mirror `DocumentRepository.upsert_many`/`delete_many`'s exact signatures — both ports are now asked to do the same two things (persist a batch of documents; remove some by connection + external id) against their own store. This is an additive, backward-compatible port change: nothing that only calls `search()` (the search router) needs to change.
+**Deviation from the design above, found during implementation**: `index_documents` also takes `source_type`/`external_account`, not just `documents`. `Document` doesn't carry either — they're connection-level facts, not document-level ones (see `SearchHit`'s own split in `domain/entities.py`) — and unlike Postgres, Elasticsearch has no `source_connections` table to `JOIN` against at query time, so they have to be denormalized onto each document at index time instead. `SyncSource` already has the `connection` in scope when it calls `index_documents`, so passing them through costs nothing. Otherwise `index_documents`/`delete_documents` mirror `DocumentRepository.upsert_many`/`delete_many`'s shape as designed: both ports do the same two things (persist a batch; remove some by connection + external id) against their own store. This is an additive, backward-compatible port change: nothing that only calls `search()` (the search router) needs to change.
 
 **Also changing, and required for §3.1 to actually work**: `DocumentRepository.upsert_many` currently returns `None` (see `ports/document_repository.py`). It needs to return `list[Document]` instead — the same documents, but with `.id` now populated with whatever Postgres assigned them:
 
@@ -61,7 +63,9 @@ Changes to the existing `try` block in `application/sync/sync_source.py`, right 
 ```python
 if batch.upserts:
     persisted = self._document_repo.upsert_many(batch.upserts)   # now returns list[Document], ids populated
-    self._search_index.index_documents(persisted)                 # new — indexed with real ids, not the id=0 placeholders
+    self._search_index.index_documents(                           # new — indexed with real ids, not the id=0 placeholders
+        persisted, connection.source_type, connection.external_account
+    )
 if batch.deleted_external_ids:
     self._document_repo.delete_many(connection.id, batch.deleted_external_ids)
     self._search_index.delete_documents(connection.id, batch.deleted_external_ids)  # new
@@ -107,6 +111,7 @@ One Elasticsearch index, `findr_documents` — not one index per tenant. Per-use
       "connection_id": { "type": "keyword" },
       "external_id":   { "type": "keyword" },
       "source_type":   { "type": "keyword" },
+      "external_account": { "type": "keyword" },
       "subject":       { "type": "text" },
       "sender":        { "type": "text" },
       "recipients":    { "type": "text" },
@@ -119,6 +124,8 @@ One Elasticsearch index, `findr_documents` — not one index per tenant. Per-use
 ```
 
 `thread_id` is a **prerequisite from `specs/gmail-thread-id.md`** — Gmail's conversation-grouping key, `keyword` (not `text`) since it's an exact-match field, never full-text searched. Included here for the same reason as the Postgres column: free to add before the index exists, a mapping change afterward otherwise.
+
+`external_account` isn't in the design above — added during implementation alongside the `index_documents` signature change in §2, for the same reason: it's needed (by `search_router.py`'s Slack deep-link building, via `SearchHit.external_account`) but has no source to `JOIN` from in Elasticsearch, so it's denormalized onto each document like `source_type`.
 
 `delete_documents(connection_id, external_ids)` uses ES's delete-by-query filtered on `connection_id` + `external_id` terms — matching `DocumentRepository.delete_many`'s exact inputs, so the caller never needs to know an ES-internal `_id` to delete something.
 
@@ -136,7 +143,7 @@ Replaces FTS5's `documents_fts MATCH :query` + `bm25()` + `snippet()`:
 - New dependency: the official `elasticsearch` Python client (v8.x, matching an ES 8.x server).
 - Index creation is idempotent and happens at startup, the same way `init_db()` creates Postgres tables — a new `ensure_index()` (or similar) called from `app.py`'s `lifespan`, checking if `findr_documents` exists before creating it with the mapping in §4.
 - `scripts/reindex_search.py` (§3.4) calls this same `ensure_index()` before backfilling, so a fresh environment can go from "empty Postgres, no ES index" to fully populated with one command after a normal sync has run.
-- **`index_documents(documents)` uses the client's Bulk API** (`elasticsearch.helpers.bulk`), sending the whole batch as one request — not a loop issuing one `index()` call per document. For the concrete case this spec keeps coming back to (an initial Gmail sync producing ~100-200 documents in one `ChangeBatch`), that's the difference between one HTTP round trip and 100-200 of them. Same reasoning as the per-message rate-limit problem already hit and fixed in `GmailConnector` (`specs/gmail-connector.md`) — many individual calls in a tight loop is exactly the pattern that trips a provider's request-rate limits, and Elasticsearch's bulk endpoint exists specifically so this doesn't have to happen.
+- **`index_documents` uses the client's Bulk API** (`elasticsearch.helpers.bulk`), sending the whole batch as one request — not a loop issuing one `index()` call per document. For the concrete case this spec keeps coming back to (an initial Gmail sync producing ~100-200 documents in one `ChangeBatch`), that's the difference between one HTTP round trip and 100-200 of them. Same reasoning as the per-message rate-limit problem already hit and fixed in `GmailConnector` (`specs/gmail-connector.md`) — many individual calls in a tight loop is exactly the pattern that trips a provider's request-rate limits, and Elasticsearch's bulk endpoint exists specifically so this doesn't have to happen.
 
 ## 7. `docker-compose.yml` addition
 
@@ -164,7 +171,7 @@ volumes:
 
 Same split as the Postgres spec: application-layer tests (`SyncSource` et al.) already use a `FakeSearchIndex` test double for the port — adding `index_documents`/`delete_documents` to that fake is a small, mechanical change, no real ES needed.
 
-Adapter-level tests for `ElasticsearchIndex` run against the real, dockerized Elasticsearch from §7 (decided, matching the Postgres spec's testing-strategy answer) — each test uses a uniquely-named index (created fresh, deleted in teardown) to avoid cross-test pollution, since ES has no equivalent of SQLite's free-per-test-engine isolation or a lightweight transaction-rollback pattern.
+Adapter-level tests for `ElasticsearchIndex` run against the real, dockerized Elasticsearch from §7 (decided, matching the Postgres spec's testing-strategy answer) — each test uses a uniquely-named index (created fresh, deleted in teardown) to avoid cross-test pollution, since ES has no equivalent of SQLite's free-per-test-engine isolation or a lightweight transaction-rollback pattern. **Found during implementation**: the fresh index must be created via the real `ensure_index()` (§6's mapping), not left for Elasticsearch to infer dynamically on first write — dynamic mapping types `external_id`/`connection_id` as `text`/`long` instead of `keyword`, which silently breaks the exact-match `term`/`terms` queries `delete_documents` relies on (a `term` query against an analyzed `text` field doesn't match the unanalyzed literal). The `es_index` test fixture calls `ensure_index()` itself so every test using it gets the production mapping for free.
 
 ## 9. Edge cases
 
@@ -187,4 +194,6 @@ Adapter-level tests for `ElasticsearchIndex` run against the real, dockerized El
 
 **Automated**: `FakeSearchIndex` gains `index_documents`/`delete_documents` for existing `SyncSource` tests to assert against (mirroring how `FakeDocumentRepository` already works in those tests). New adapter tests for `ElasticsearchIndex` against the real dockerized ES: index a document, search finds it scoped to the right `user_id`, delete removes it, highlighting produces the same `[`/`]` markers the frontend expects. A test for `scripts/reindex_search.py`: seed Postgres directly (bypassing the sync path), run the script, confirm the documents are now searchable via ES.
 
-**Manual end-to-end**: `docker compose up -d elasticsearch`, run the app, connect a source, wait for/trigger a sync, confirm documents appear in the ES index (`curl localhost:9200/findr_documents/_search`), search from the UI and confirm results + highlighting render identically to before the migration, disconnect a source and confirm its documents are removed from ES too. Separately: wipe the ES index entirely (`curl -X DELETE localhost:9200/findr_documents`), run `scripts/reindex_search.py`, confirm search works again without needing to reconnect or resync anything.
+**Manual end-to-end**: `docker compose up -d elasticsearch`, run the app, connect a source, wait for/trigger a sync, confirm documents appear in the ES index (`curl localhost:9200/findr_documents/_search`), search from the UI and confirm results + highlighting render identically to before the migration. Separately: wipe the ES index entirely (`curl -X DELETE localhost:9200/findr_documents`), run `scripts/reindex_search.py`, confirm search works again without needing to reconnect or resync anything.
+
+**Correction, found during implementation**: the line above originally said disconnecting a source should remove its documents from ES. It doesn't, and this isn't a regression — `DisconnectSource` (`application/sources/disconnect_source.py`) only revokes credentials and marks the connection `DISCONNECTED`; it never touches `documents`, and neither did the old `SearchIndexSqlite` query filter them out (its `JOIN source_connections` only read `source_type`/`external_account`, with no status filter). A disconnected source's documents stay searchable in both the old and new system alike — out of scope for this migration, which is meant to be behavior-invisible (§1).

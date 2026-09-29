@@ -7,10 +7,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 class Base(DeclarativeBase):
     """Base for SQLAlchemy ORM models (adapter-layer persistence models —
     domain/ stays plain dataclasses; repositories translate between the two).
-
-    The documents_fts virtual table + its sync triggers can't be expressed as
-    an ORM model (SQLite FTS5 isn't a normal table) and stay as raw SQL in
-    schema.sql, applied alongside Base.metadata.create_all() in db.py.
     """
 
 
@@ -65,10 +61,6 @@ class DocumentModel(Base):
     __tablename__ = "documents"
     __table_args__ = (UniqueConstraint("connection_id", "external_id"),)
 
-    # Plain INTEGER PRIMARY KEY (== SQLite rowid) is required: documents_fts
-    # (schema.sql) is an external-content FTS5 table with content_rowid='id',
-    # so this id must line up with SQLite's own rowid for the sync triggers
-    # to work.
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     connection_id: Mapped[int] = mapped_column(
@@ -80,5 +72,7 @@ class DocumentModel(Base):
     recipients: Mapped[str | None]
     body_text: Mapped[str | None]
     sent_at: Mapped[datetime | None]
+    # Gmail conversation-grouping key — see specs/gmail-thread-id.md. None
+    # for connectors that don't populate it (Slack/Notion, out of scope there).
     thread_id: Mapped[str | None] = mapped_column(index=True)
     created_at: Mapped[datetime]

@@ -5,13 +5,13 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session as DbSession
 
-from findr.adapters.outbound.sqlite.models import OAuthStateModel
+from findr.adapters.outbound.postgres.models import OAuthStateModel
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.ports.clock import Clock
 from findr.ports.oauth_state_repository import OAuthState
 
 
-class OAuthStateRepositorySqlite:
+class OAuthStateRepositoryPostgres:
     """Implements ports.oauth_state_repository.OAuthStateRepository."""
 
     def __init__(self, db: DbSession, clock: Clock | None = None) -> None:

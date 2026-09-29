@@ -6,14 +6,14 @@ from datetime import timedelta
 from sqlalchemy import delete
 from sqlalchemy.orm import Session as DbSession
 
-from findr.adapters.outbound.sqlite.models import SessionModel
+from findr.adapters.outbound.postgres.models import SessionModel
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.ports.clock import Clock
 
 DEFAULT_SESSION_TTL_DAYS = 14
 
 
-class SessionStoreSqlite:
+class SessionStorePostgres:
     """Implements ports.session_store.SessionStore."""
 
     def __init__(

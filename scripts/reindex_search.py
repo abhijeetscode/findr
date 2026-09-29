@@ -1,0 +1,96 @@
+"""On-demand backfill: Postgres -> Elasticsearch. See
+specs/elasticsearch-search.md §3.4. Bootstraps a fresh environment or
+recovers from Elasticsearch data loss. Run manually:
+
+    uv run python scripts/reindex_search.py
+
+Not a scheduled job — an operator-triggered action.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+
+from findr.adapters.outbound.elasticsearch.es_client import (  # noqa: E402
+    create_es_client,
+    ensure_index,
+)
+from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import (  # noqa: E402
+    ElasticsearchIndex,
+)
+from findr.adapters.outbound.postgres.db import create_db_engine  # noqa: E402
+from findr.adapters.outbound.postgres.models import DocumentModel, SourceConnectionModel  # noqa: E402
+from findr.domain.entities import Document  # noqa: E402
+from findr.domain.value_objects import SourceType  # noqa: E402
+from findr.config import Settings  # noqa: E402
+
+BATCH_SIZE = 500
+
+
+def _to_document(row: DocumentModel) -> Document:
+    return Document(
+        id=row.id,
+        user_id=row.user_id,
+        connection_id=row.connection_id,
+        external_id=row.external_id,
+        subject=row.subject,
+        sender=row.sender,
+        recipients=row.recipients,
+        body_text=row.body_text,
+        sent_at=row.sent_at,
+        thread_id=row.thread_id,
+    )
+
+
+def main() -> None:
+    settings = Settings()
+    engine = create_db_engine(settings.database_url)
+    session_factory = sessionmaker(bind=engine)
+
+    es_client = create_es_client(settings.elasticsearch_url)
+    ensure_index(es_client, settings.elasticsearch_index)
+    search_index = ElasticsearchIndex(es_client, settings.elasticsearch_index)
+
+    db = session_factory()
+    try:
+        # One connection's source_type/external_account at a time, since
+        # index_documents needs both (see ports/search_index.py) and a
+        # single Postgres query batch can span multiple connections.
+        connections = db.execute(select(SourceConnectionModel)).scalars().all()
+        total = 0
+        for connection in connections:
+            offset = 0
+            while True:
+                rows = (
+                    db.execute(
+                        select(DocumentModel)
+                        .where(DocumentModel.connection_id == connection.id)
+                        .order_by(DocumentModel.id)
+                        .offset(offset)
+                        .limit(BATCH_SIZE)
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not rows:
+                    break
+                documents = [_to_document(row) for row in rows]
+                search_index.index_documents(
+                    documents, SourceType(connection.source_type), connection.external_account
+                )
+                total += len(documents)
+                offset += BATCH_SIZE
+        print(f"Reindexed {total} document(s) from Postgres into Elasticsearch.")
+    finally:
+        db.close()
+        es_client.close()
+
+
+if __name__ == "__main__":
+    main()

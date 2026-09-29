@@ -9,8 +9,8 @@ from findr.adapters.inbound.http.deps import (
     get_settings,
 )
 from findr.adapters.outbound.crypto.password_hasher_argon2 import Argon2Hasher
-from findr.adapters.outbound.sqlite.session_store_sqlite import SessionStoreSqlite
-from findr.adapters.outbound.sqlite.user_repository_sqlite import UserRepositorySqlite
+from findr.adapters.outbound.postgres.session_store_postgres import SessionStorePostgres
+from findr.adapters.outbound.postgres.user_repository_postgres import UserRepositoryPostgres
 from findr.application.auth.login_user import LoginUser
 from findr.application.auth.logout_user import LogoutUser
 from findr.config import Settings
@@ -39,8 +39,8 @@ def login(
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> UserResponse:
-    user_repo = UserRepositorySqlite(db)
-    session_store = SessionStoreSqlite(db, ttl_days=settings.session_ttl_days)
+    user_repo = UserRepositoryPostgres(db)
+    session_store = SessionStorePostgres(db, ttl_days=settings.session_ttl_days)
     use_case = LoginUser(user_repo, Argon2Hasher(), session_store)
     try:
         token = use_case.execute(body.email, body.password)
@@ -76,6 +76,6 @@ def me(user: User = Depends(get_current_user)) -> UserResponse:
 def logout(request: Request, response: Response, db: Session = Depends(get_db_session)) -> None:
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
-        LogoutUser(SessionStoreSqlite(db)).execute(token)
+        LogoutUser(SessionStorePostgres(db)).execute(token)
         db.commit()
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
