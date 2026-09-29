@@ -1,4 +1,19 @@
 services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      FINDR_DATABASE_URL: postgresql+psycopg://findr:findr@postgres:5432/findr
+      FINDR_ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
   postgres:
     image: postgres:16
     environment:
