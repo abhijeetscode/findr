@@ -57,6 +57,10 @@ class SearchHit:
     # property of the connection, not the document itself. Needed so the UI
     # can render a per-result source badge.
     source_type: SourceType
+    # The connection's dedup key (Gmail email, Slack "{team_id}:{user_id}",
+    # Notion workspace_id) — needed to build a deep link back to the
+    # original item for some sources (e.g. Slack needs the team_id).
+    external_account: str | None = None
 
 
 @dataclass

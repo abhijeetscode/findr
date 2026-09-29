@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", validation_alias="FINDR_ENV")
     session_ttl_days: int = Field(default=14, validation_alias="FINDR_SESSION_TTL_DAYS")
 
+    # There's no public sign-up; the app seeds a single fixed demo account on
+    # startup (see app.py's lifespan) rather than exposing a /auth/register
+    # endpoint. Override via env if you don't want the published defaults.
+    demo_username: str = Field(default="demouser", validation_alias="FINDR_DEMO_USERNAME")
+    demo_password: str = Field(default="password@2050", validation_alias="FINDR_DEMO_PASSWORD")
+
     google_oauth_client_id: str = Field(default="", validation_alias="GOOGLE_OAUTH_CLIENT_ID")
     google_oauth_client_secret: str = Field(
         default="", validation_alias="GOOGLE_OAUTH_CLIENT_SECRET"

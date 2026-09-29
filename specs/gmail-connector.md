@@ -169,6 +169,8 @@ One per file under `application/`, each a small class/function constructor-injec
 - **`oauth_states`**: `(state, user_id, code_verifier, expires_at)`, created at `BeginGmailConnect`, validated at `CompleteGmailConnect`. The resulting connection is associated with `oauth_states.user_id` — the user who *initiated* the connect — not whatever session happens to be current when the callback lands. Closes a session-fixation-style gap.
 - **Ownership**: `source_connections.user_id` is a required FK; every repository method that reads/writes connections or documents takes and filters by `user_id` explicitly — never inferred implicitly inside an adapter.
 
+**Addendum (removed after initial implementation):** `POST /auth/register` has been removed — there's no public sign-up. `RegisterUser` still exists as an application use case (it's just no longer routed), and `app.py`'s lifespan calls it once on every startup to idempotently seed a single fixed demo account (`Settings.demo_username`/`demo_password`, overridable via `FINDR_DEMO_USERNAME`/`FINDR_DEMO_PASSWORD`). `LoginRequest.email` was relaxed from `EmailStr` to a plain `str` accordingly, since the demo "email" isn't a real address.
+
 ## 6. Gmail OAuth flow
 
 **Library**: raw OAuth 2.0 + PKCE over `httpx` (async), not `google-auth-oauthlib`/`google-api-python-client` (both synchronous, would fight FastAPI's async model, and have known local-dev PKCE/redirect pitfalls). The needed Gmail surface is small: authorize URL, token exchange, token refresh, `users.messages.list`, `users.messages.get`, `users.history.list`.
@@ -307,4 +309,4 @@ User search input must have FTS5 special characters (`"`, `-`, `:`, `*`) escaped
 2. `SyncSource` driven by a `FakeConnector` test double → dedup on re-sync, deletion removes from search.
 3. `gmail_mime.py` normalization against a fixture multipart Gmail message JSON.
 
-**Manual end-to-end**: register/login → connect Gmail via browser OAuth → wait for a sync tick → search returns results scoped to that user → a second, unconnected user's search returns nothing from the first user's mail → simulating a bad refresh token surfaces `NEEDS_REAUTH` without crashing the scheduler.
+**Manual end-to-end**: log in with the seeded demo account → connect Gmail via browser OAuth → wait for a sync tick → search returns results scoped to that user → simulating a bad refresh token surfaces `NEEDS_REAUTH` without crashing the scheduler.

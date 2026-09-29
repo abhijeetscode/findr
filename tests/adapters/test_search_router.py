@@ -3,12 +3,54 @@ from datetime import datetime
 from fastapi.testclient import TestClient
 
 from findr.adapters.inbound.http.app import app
+from findr.adapters.inbound.http.routers.search_router import _source_url
 from findr.adapters.outbound.sqlite.document_repository_sqlite import DocumentRepositorySqlite
 from findr.adapters.outbound.sqlite.source_connection_repo_sqlite import (
     SourceConnectionRepositorySqlite,
 )
-from findr.domain.entities import Document
+from findr.domain.entities import Document, SearchHit
 from findr.domain.value_objects import SourceType
+
+
+def _hit(source_type, external_id, external_account=None) -> SearchHit:
+    document = Document(
+        id=1,
+        user_id=1,
+        connection_id=1,
+        external_id=external_id,
+        subject=None,
+        sender=None,
+        recipients=None,
+        body_text=None,
+        sent_at=None,
+    )
+    return SearchHit(
+        document=document, snippet="", score=1.0, source_type=source_type,
+        external_account=external_account,
+    )
+
+
+def test_source_url_for_gmail():
+    assert _source_url(_hit(SourceType.GMAIL, "1a0d80362b124e4d")) == (
+        "https://mail.google.com/mail/u/0/#all/1a0d80362b124e4d"
+    )
+
+
+def test_source_url_for_notion_strips_dashes():
+    page_id = "550e8400-e29b-41d4-a716-446655440000"
+    assert _source_url(_hit(SourceType.NOTION, page_id)) == (
+        "https://www.notion.so/550e8400e29b41d4a716446655440000"
+    )
+
+
+def test_source_url_for_slack_uses_channel_and_team_id():
+    hit = _hit(SourceType.SLACK, "C123:1700000000.000100", external_account="T456:U789")
+    assert _source_url(hit) == "https://app.slack.com/client/T456/C123"
+
+
+def test_source_url_for_slack_returns_none_without_team_id():
+    hit = _hit(SourceType.SLACK, "C123:1700000000.000100", external_account=None)
+    assert _source_url(hit) is None
 
 
 def test_search_endpoint_requires_login(monkeypatch):
@@ -21,13 +63,8 @@ def test_search_endpoint_requires_login(monkeypatch):
 def test_search_endpoint_returns_only_the_logged_in_users_documents(monkeypatch):
     monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
     with TestClient(app) as client:
-        register_resp = client.post(
-            "/auth/register", json={"email": "a@example.com", "password": "correct-horse-1"}
-        )
-        user_id = register_resp.json()["id"]
-        client.post(
-            "/auth/login", json={"email": "a@example.com", "password": "correct-horse-1"}
-        )
+        client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
+        user_id = client.get("/auth/me").json()["id"]
 
         # Insert directly through the repository, against the same
         # in-memory engine the app's lifespan created (StaticPool keeps it
@@ -64,6 +101,7 @@ def test_search_endpoint_returns_only_the_logged_in_users_documents(monkeypatch)
         assert results[0]["subject"] == "Q3 renewal terms"
         assert results[0]["source_type"] == "gmail"
         assert results[0]["recipients"] == "Inbox"
+        assert results[0]["url"] == "https://mail.google.com/mail/u/0/#all/msg-1"
 
 
 def test_search_endpoint_serializes_documents_with_a_sent_at_timestamp(monkeypatch):
@@ -73,13 +111,8 @@ def test_search_endpoint_serializes_documents_with_a_sent_at_timestamp(monkeypat
     # `.isoformat()` in the router with a 500.
     monkeypatch.setenv("FINDR_DATABASE_PATH", ":memory:")
     with TestClient(app) as client:
-        register_resp = client.post(
-            "/auth/register", json={"email": "a@example.com", "password": "correct-horse-1"}
-        )
-        user_id = register_resp.json()["id"]
-        client.post(
-            "/auth/login", json={"email": "a@example.com", "password": "correct-horse-1"}
-        )
+        client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
+        user_id = client.get("/auth/me").json()["id"]
 
         db = app.state.session_factory()
         try:

@@ -16,6 +16,7 @@ _SEARCH_SQL = text(
     SELECT d.id, d.user_id, d.connection_id, d.external_id,
            d.subject, d.sender, d.recipients, d.body_text, d.sent_at,
            sc.source_type AS source_type,
+           sc.external_account AS external_account,
            snippet(documents_fts, 2, '[', ']', '…', 10) AS snippet,
            bm25(documents_fts) AS rank
     FROM documents_fts
@@ -79,6 +80,7 @@ class SearchIndexSqlite:
                     snippet=row.snippet,
                     score=-row.rank,
                     source_type=SourceType(row.source_type),
+                    external_account=row.external_account,
                 )
             )
         return hits

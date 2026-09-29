@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from findr.adapters.inbound.http.deps import (
@@ -13,39 +13,23 @@ from findr.adapters.outbound.sqlite.session_store_sqlite import SessionStoreSqli
 from findr.adapters.outbound.sqlite.user_repository_sqlite import UserRepositorySqlite
 from findr.application.auth.login_user import LoginUser
 from findr.application.auth.logout_user import LogoutUser
-from findr.application.auth.register_user import RegisterUser
 from findr.config import Settings
 from findr.domain.entities import User
-from findr.domain.exceptions import DuplicateUser, InvalidCredentials
+from findr.domain.exceptions import InvalidCredentials
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8)
-
-
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # Plain str, not EmailStr — there's no public sign-up, and the seeded
+    # demo account's "email" (settings.demo_username) isn't a real address.
+    email: str
     password: str
 
 
 class UserResponse(BaseModel):
     id: int
     email: str
-
-
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(body: RegisterRequest, db: Session = Depends(get_db_session)) -> UserResponse:
-    use_case = RegisterUser(UserRepositorySqlite(db), Argon2Hasher())
-    try:
-        user = use_case.execute(body.email, body.password)
-    except DuplicateUser as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    db.commit()
-    return UserResponse(id=user.id, email=user.email)
 
 
 @router.post("/login", response_model=UserResponse)

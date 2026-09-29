@@ -4,61 +4,29 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from findr.adapters.inbound.http.deps import get_current_user, get_db_session, get_settings
+from findr.adapters.outbound.connector_factory import connector_for, oauth_provider_for
 from findr.adapters.outbound.crypto.token_cipher import TokenCipher
-from findr.adapters.outbound.gmail.gmail_oauth_provider import GmailOAuthProvider
-from findr.adapters.outbound.notion.notion_oauth_provider import NotionOAuthProvider
-from findr.adapters.outbound.slack.slack_oauth_provider import SlackOAuthProvider
 from findr.adapters.outbound.sqlite.credential_store_sqlite import CredentialStoreSqlite
+from findr.adapters.outbound.sqlite.document_repository_sqlite import DocumentRepositorySqlite
 from findr.adapters.outbound.sqlite.oauth_state_repository_sqlite import (
     OAuthStateRepositorySqlite,
 )
 from findr.adapters.outbound.sqlite.source_connection_repo_sqlite import (
     SourceConnectionRepositorySqlite,
 )
+from findr.adapters.outbound.system_clock import SystemClock
 from findr.application.sources.connect_gmail import BeginGmailConnect, CompleteGmailConnect
 from findr.application.sources.connect_notion import BeginNotionConnect, CompleteNotionConnect
 from findr.application.sources.connect_slack import BeginSlackConnect, CompleteSlackConnect
 from findr.application.sources.disconnect_source import DisconnectSource
 from findr.application.sources.list_connections import ListConnections
+from findr.application.sync.sync_source import SyncSource
 from findr.config import Settings
 from findr.domain.entities import SourceConnection, User
 from findr.domain.exceptions import ConnectionNotFound, InvalidOAuthState, SourceAuthError
+from findr.domain.value_objects import ConnectionStatus, SourceType
 
 router = APIRouter(prefix="/sources", tags=["sources"])
-
-
-def _gmail_oauth_provider(settings: Settings) -> GmailOAuthProvider:
-    return GmailOAuthProvider(
-        client_id=settings.google_oauth_client_id,
-        client_secret=settings.google_oauth_client_secret,
-        redirect_uri=settings.google_oauth_redirect_uri,
-    )
-
-
-def _slack_oauth_provider(settings: Settings) -> SlackOAuthProvider:
-    return SlackOAuthProvider(
-        client_id=settings.slack_client_id,
-        client_secret=settings.slack_client_secret,
-        redirect_uri=settings.slack_redirect_uri,
-    )
-
-
-def _notion_oauth_provider(settings: Settings) -> NotionOAuthProvider:
-    return NotionOAuthProvider(
-        client_id=settings.notion_client_id,
-        client_secret=settings.notion_client_secret,
-        redirect_uri=settings.notion_redirect_uri,
-    )
-
-
-# Per-connection: which provider disconnect() needs to revoke against, keyed
-# by the same source_type value stored on the connection.
-def _oauth_provider_for(source_type: str, settings: Settings):
-    return {
-        "gmail": _gmail_oauth_provider,
-        "slack": _slack_oauth_provider,
-        "notion": _notion_oauth_provider,
-    }[source_type](settings)
 
 
 def _credential_store(db: Session, settings: Settings) -> CredentialStoreSqlite:
@@ -106,7 +74,9 @@ def gmail_connect(
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    use_case = BeginGmailConnect(_gmail_oauth_provider(settings), OAuthStateRepositorySqlite(db))
+    use_case = BeginGmailConnect(
+        oauth_provider_for(SourceType.GMAIL, settings), OAuthStateRepositorySqlite(db)
+    )
     authorize_url = use_case.execute(user.id)
     db.commit()
     return RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
@@ -123,7 +93,7 @@ def gmail_callback(
     # whoever initiated the connect (bound to `state`), not to whatever
     # session cookie happens to be current when Google redirects back.
     use_case = CompleteGmailConnect(
-        _gmail_oauth_provider(settings),
+        oauth_provider_for(SourceType.GMAIL, settings),
         OAuthStateRepositorySqlite(db),
         SourceConnectionRepositorySqlite(db),
         _credential_store(db, settings),
@@ -146,7 +116,9 @@ def slack_connect(
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    use_case = BeginSlackConnect(_slack_oauth_provider(settings), OAuthStateRepositorySqlite(db))
+    use_case = BeginSlackConnect(
+        oauth_provider_for(SourceType.SLACK, settings), OAuthStateRepositorySqlite(db)
+    )
     authorize_url = use_case.execute(user.id)
     db.commit()
     return RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
@@ -162,7 +134,7 @@ def slack_callback(
     # Deliberately NOT behind get_current_user — same reasoning as Gmail's
     # callback above.
     use_case = CompleteSlackConnect(
-        _slack_oauth_provider(settings),
+        oauth_provider_for(SourceType.SLACK, settings),
         OAuthStateRepositorySqlite(db),
         SourceConnectionRepositorySqlite(db),
         _credential_store(db, settings),
@@ -185,7 +157,9 @@ def notion_connect(
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
-    use_case = BeginNotionConnect(_notion_oauth_provider(settings), OAuthStateRepositorySqlite(db))
+    use_case = BeginNotionConnect(
+        oauth_provider_for(SourceType.NOTION, settings), OAuthStateRepositorySqlite(db)
+    )
     authorize_url = use_case.execute(user.id)
     db.commit()
     return RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
@@ -201,7 +175,7 @@ def notion_callback(
     # Deliberately NOT behind get_current_user — same reasoning as Gmail's
     # callback above.
     use_case = CompleteNotionConnect(
-        _notion_oauth_provider(settings),
+        oauth_provider_for(SourceType.NOTION, settings),
         OAuthStateRepositorySqlite(db),
         SourceConnectionRepositorySqlite(db),
         _credential_store(db, settings),
@@ -216,6 +190,43 @@ def notion_callback(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     db.commit()
     return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+
+
+@router.post("/{connection_id}/sync", response_model=SourceConnectionResponse)
+def resync(
+    connection_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
+) -> SourceConnectionResponse:
+    """Manually triggers an immediate sync for one connection, instead of
+    waiting for the next scheduler tick (up to FINDR_SYNC_INTERVAL_SECONDS
+    away) — same SyncSource the background scheduler uses, just run
+    synchronously for one connection on request."""
+    connection_repo = SourceConnectionRepositorySqlite(db)
+    connection = connection_repo.get(connection_id, user.id)
+    if connection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    if connection.status == ConnectionStatus.DISCONNECTED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Connection is disconnected; reconnect it first",
+        )
+
+    use_case = SyncSource(
+        connector_for(connection.source_type, connection.user_id, connection.id),
+        oauth_provider_for(connection.source_type, settings),
+        _credential_store(db, settings),
+        connection_repo,
+        DocumentRepositorySqlite(db),
+        SystemClock(),
+    )
+    use_case.execute(connection)
+    db.commit()
+
+    updated = connection_repo.get(connection_id, user.id)
+    assert updated is not None  # just synced above; a miss here means a real bug
+    return _to_response(updated)
 
 
 @router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -233,7 +244,7 @@ def disconnect(
     use_case = DisconnectSource(
         connection_repo,
         _credential_store(db, settings),
-        _oauth_provider_for(connection.source_type.value, settings),
+        oauth_provider_for(connection.source_type, settings),
     )
     try:
         use_case.execute(connection_id, user.id)
