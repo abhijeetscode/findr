@@ -1,10 +1,11 @@
+from elasticsearch import Elasticsearch
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
-from findr.adapters.inbound.http.deps import get_current_user, get_db_session
-from findr.adapters.outbound.sqlite.search_index_sqlite import SearchIndexSqlite
+from findr.adapters.inbound.http.deps import get_current_user, get_es_client, get_settings
+from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
 from findr.application.search.search_documents import SearchDocuments
+from findr.config import Settings
 from findr.domain.entities import SearchHit, User
 from findr.domain.value_objects import SourceType
 
@@ -54,9 +55,10 @@ class SearchResponse(BaseModel):
 def search(
     q: str = Query(..., min_length=1),
     user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
+    es_client: Elasticsearch = Depends(get_es_client),
+    settings: Settings = Depends(get_settings),
 ) -> SearchResponse:
-    use_case = SearchDocuments(SearchIndexSqlite(db))
+    use_case = SearchDocuments(ElasticsearchIndex(es_client, settings.elasticsearch_index))
     hits = use_case.execute(user.id, q)
     return SearchResponse(
         results=[

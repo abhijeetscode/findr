@@ -12,7 +12,16 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_path: str = Field(default="findr.db", validation_alias="FINDR_DATABASE_PATH")
+    database_url: str = Field(
+        default="postgresql+psycopg://findr:findr@localhost:5432/findr",
+        validation_alias="FINDR_DATABASE_URL",
+    )
+    elasticsearch_url: str = Field(
+        default="http://localhost:9200", validation_alias="FINDR_ELASTICSEARCH_URL"
+    )
+    elasticsearch_index: str = Field(
+        default="findr_documents", validation_alias="FINDR_ELASTICSEARCH_INDEX"
+    )
     session_secret: str = Field(
         default="dev-only-change-me", validation_alias="FINDR_SESSION_SECRET"
     )

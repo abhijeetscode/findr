@@ -5,11 +5,11 @@ from datetime import datetime
 from sqlalchemy.orm import Session as DbSession
 
 from findr.adapters.outbound.crypto.token_cipher import TokenCipher
-from findr.adapters.outbound.sqlite.models import SourceConnectionModel
+from findr.adapters.outbound.postgres.models import SourceConnectionModel
 from findr.domain.entities import Credentials
 
 
-class CredentialStoreSqlite:
+class CredentialStorePostgres:
     """Implements ports.credential_store.CredentialStore. Tokens are
     encrypted at rest via TokenCipher (Fernet) — see specs/gmail-connector.md
     for why this is column-level, not full-disk, encryption."""

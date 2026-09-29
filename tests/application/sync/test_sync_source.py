@@ -91,11 +91,33 @@ class FakeDocumentRepository:
     def __init__(self) -> None:
         self.upserted: list[Document] = []
         self.deleted: list[tuple[int, list[str]]] = []
+        self._next_id = 1
 
-    def upsert_many(self, documents) -> None:
-        self.upserted.extend(documents)
+    def upsert_many(self, documents) -> list[Document]:
+        persisted = []
+        for doc in documents:
+            doc.id = self._next_id
+            self._next_id += 1
+            persisted.append(doc)
+        self.upserted.extend(persisted)
+        return persisted
 
     def delete_many(self, connection_id, external_ids) -> None:
+        self.deleted.append((connection_id, external_ids))
+
+
+class FakeSearchIndex:
+    def __init__(self) -> None:
+        self.indexed: list[tuple[list[Document], SourceType, str | None]] = []
+        self.deleted: list[tuple[int, list[str]]] = []
+
+    def search(self, user_id, query):
+        raise NotImplementedError
+
+    def index_documents(self, documents, source_type, external_account) -> None:
+        self.indexed.append((documents, source_type, external_account))
+
+    def delete_documents(self, connection_id, external_ids) -> None:
         self.deleted.append((connection_id, external_ids))
 
 
@@ -147,14 +169,23 @@ def test_sync_source_upserts_and_deletes_then_marks_active():
     )
     batch = ChangeBatch(upserts=[doc], deleted_external_ids=["msg-old"], new_cursor="new-cursor")
     connector = FakeConnector(responses=[batch])
+    search_index = FakeSearchIndex()
 
     use_case = SyncSource(
-        connector, FakeOAuthProvider(), credential_store, connection_repo, document_repo, clock
+        connector,
+        FakeOAuthProvider(),
+        credential_store,
+        connection_repo,
+        document_repo,
+        search_index,
+        clock,
     )
     use_case.execute(_connection())
 
     assert document_repo.upserted == [doc]
     assert document_repo.deleted == [(1, ["msg-old"])]
+    assert search_index.indexed == [([doc], SourceType.GMAIL, "a@gmail.com")]
+    assert search_index.deleted == [(1, ["msg-old"])]
     assert connection_repo.cursor_updates == [(1, "new-cursor", clock.current)]
     assert connection_repo.status_updates == [(1, ConnectionStatus.ACTIVE, None)]
     assert connector.calls == [(credentials, "old-cursor")]
@@ -172,7 +203,13 @@ def test_sync_source_refreshes_expired_credentials_before_syncing():
     connector = FakeConnector(responses=[batch])
 
     use_case = SyncSource(
-        connector, oauth_provider, credential_store, connection_repo, document_repo, clock
+        connector,
+        oauth_provider,
+        credential_store,
+        connection_repo,
+        document_repo,
+        FakeSearchIndex(),
+        clock,
     )
     use_case.execute(_connection())
 
@@ -192,6 +229,7 @@ def test_sync_source_marks_needs_reauth_when_no_stored_credentials():
         FakeCredentialStore(),
         connection_repo,
         FakeDocumentRepository(),
+        FakeSearchIndex(),
         clock,
     )
     use_case.execute(_connection())  # must not raise
@@ -212,6 +250,7 @@ def test_sync_source_marks_needs_reauth_when_refresh_fails():
         credential_store,
         connection_repo,
         FakeDocumentRepository(),
+        FakeSearchIndex(),
         clock,
     )
     use_case.execute(_connection())
@@ -239,7 +278,13 @@ def test_sync_source_falls_back_to_full_resync_when_cursor_expired():
 
     connector = ExpiringThenFullConnector()
     use_case = SyncSource(
-        connector, FakeOAuthProvider(), credential_store, connection_repo, document_repo, clock
+        connector,
+        FakeOAuthProvider(),
+        credential_store,
+        connection_repo,
+        document_repo,
+        FakeSearchIndex(),
+        clock,
     )
     use_case.execute(_connection(sync_cursor="ancient-cursor"))
 
@@ -261,6 +306,7 @@ def test_sync_source_marks_error_on_unexpected_failure_without_raising():
         credential_store,
         connection_repo,
         FakeDocumentRepository(),
+        FakeSearchIndex(),
         clock,
     )
     use_case.execute(_connection())  # must not raise

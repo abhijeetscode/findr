@@ -1,27 +1,16 @@
 from datetime import datetime
 
-from findr.adapters.outbound.sqlite.document_repository_sqlite import DocumentRepositorySqlite
-from findr.adapters.outbound.sqlite.search_index_sqlite import SearchIndexSqlite
-from findr.adapters.outbound.sqlite.source_connection_repo_sqlite import (
-    SourceConnectionRepositorySqlite,
-)
-from findr.adapters.outbound.sqlite.user_repository_sqlite import UserRepositorySqlite
+from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
 from findr.application.search.search_documents import SearchDocuments
 from findr.domain.entities import Document
 from findr.domain.value_objects import SourceType
 
 
-def _make_connection(db_session, user_id: int, email: str) -> int:
-    connection = SourceConnectionRepositorySqlite(db_session).create(
-        user_id, SourceType.GMAIL, email
-    )
-    db_session.commit()
-    return connection.id
-
-
-def _make_document(*, user_id, connection_id, external_id, subject, body_text, thread_id=None) -> Document:
+def _make_document(
+    *, doc_id, user_id, connection_id, external_id, subject, body_text, thread_id=None
+) -> Document:
     return Document(
-        id=0,  # ignored on insert; SQLite assigns the real id
+        id=doc_id,
         user_id=user_id,
         connection_id=connection_id,
         external_id=external_id,
@@ -34,166 +23,184 @@ def _make_document(*, user_id, connection_id, external_id, subject, body_text, t
     )
 
 
-def test_search_is_isolated_per_user(db_session):
-    user_repo = UserRepositorySqlite(db_session)
-    user_a = user_repo.create("a@example.com", "hash")
-    user_b = user_repo.create("b@example.com", "hash")
-    db_session.commit()
-    connection_a = _make_connection(db_session, user_a.id, "a@gmail.com")
-    connection_b = _make_connection(db_session, user_b.id, "b@gmail.com")
-
-    doc_repo = DocumentRepositorySqlite(db_session)
-    doc_repo.upsert_many(
+def test_search_is_isolated_per_user(es_client, es_index):
+    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index.index_documents(
         [
             _make_document(
-                user_id=user_a.id,
-                connection_id=connection_a,
+                doc_id=1,
+                user_id=1,
+                connection_id=1,
                 external_id="msg-1",
                 subject="Renewal terms",
                 body_text="Please review the renewal terms.",
             ),
             _make_document(
-                user_id=user_b.id,
-                connection_id=connection_b,
+                doc_id=2,
+                user_id=2,
+                connection_id=2,
                 external_id="msg-1",
                 subject="Renewal terms",
                 body_text="Please review the renewal terms.",
             ),
-        ]
+        ],
+        SourceType.GMAIL,
+        "a@gmail.com",
     )
-    db_session.commit()
 
-    use_case = SearchDocuments(SearchIndexSqlite(db_session))
-
-    a_hits = use_case.execute(user_a.id, "renewal")
-    b_hits = use_case.execute(user_b.id, "renewal")
+    use_case = SearchDocuments(search_index)
+    a_hits = use_case.execute(1, "renewal")
+    b_hits = use_case.execute(2, "renewal")
 
     assert len(a_hits) == 1
-    assert a_hits[0].document.user_id == user_a.id
+    assert a_hits[0].document.user_id == 1
     assert a_hits[0].source_type == SourceType.GMAIL
     assert len(b_hits) == 1
-    assert b_hits[0].document.user_id == user_b.id
+    assert b_hits[0].document.user_id == 2
 
 
-def test_upsert_dedups_on_connection_and_external_id(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
-    db_session.commit()
-    connection_id = _make_connection(db_session, user.id, "a@gmail.com")
-    doc_repo = DocumentRepositorySqlite(db_session)
-
-    doc_repo.upsert_many(
+def test_upsert_dedups_on_document_id(es_client, es_index):
+    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index.index_documents(
         [
             _make_document(
-                user_id=user.id,
-                connection_id=connection_id,
+                doc_id=1,
+                user_id=1,
+                connection_id=1,
                 external_id="msg-1",
                 subject="Old subject",
                 body_text="old body",
             )
-        ]
+        ],
+        SourceType.GMAIL,
+        "a@gmail.com",
     )
-    db_session.commit()
-    doc_repo.upsert_many(
+    search_index.index_documents(
         [
             _make_document(
-                user_id=user.id,
-                connection_id=connection_id,
+                doc_id=1,
+                user_id=1,
+                connection_id=1,
                 external_id="msg-1",
                 subject="New subject",
                 body_text="new body",
             )
-        ]
+        ],
+        SourceType.GMAIL,
+        "a@gmail.com",
     )
-    db_session.commit()
 
-    search = SearchDocuments(SearchIndexSqlite(db_session))
-    new_hits = search.execute(user.id, "new")
+    search = SearchDocuments(search_index)
+    new_hits = search.execute(1, "new")
     assert len(new_hits) == 1
     assert new_hits[0].document.subject == "New subject"
 
-    assert search.execute(user.id, "old") == []
+    assert search.execute(1, "old") == []
 
 
-def test_delete_many_removes_from_search(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
-    db_session.commit()
-    connection_id = _make_connection(db_session, user.id, "a@gmail.com")
-    doc_repo = DocumentRepositorySqlite(db_session)
-    doc_repo.upsert_many(
+def test_delete_documents_removes_from_search(es_client, es_index):
+    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index.index_documents(
         [
             _make_document(
-                user_id=user.id,
-                connection_id=connection_id,
+                doc_id=1,
+                user_id=1,
+                connection_id=1,
                 external_id="msg-1",
                 subject="Trashed",
                 body_text="this will be deleted",
             )
-        ]
+        ],
+        SourceType.GMAIL,
+        "a@gmail.com",
     )
-    db_session.commit()
 
-    search = SearchDocuments(SearchIndexSqlite(db_session))
-    assert len(search.execute(user.id, "trashed")) == 1
+    search = SearchDocuments(search_index)
+    assert len(search.execute(1, "trashed")) == 1
 
-    doc_repo.delete_many(connection_id=connection_id, external_ids=["msg-1"])
-    db_session.commit()
+    search_index.delete_documents(connection_id=1, external_ids=["msg-1"])
 
-    assert search.execute(user.id, "trashed") == []
+    assert search.execute(1, "trashed") == []
 
 
-def test_thread_id_round_trips_through_upsert_and_search(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
-    db_session.commit()
-    connection_id = _make_connection(db_session, user.id, "a@gmail.com")
-    doc_repo = DocumentRepositorySqlite(db_session)
-    doc_repo.upsert_many(
+def test_thread_id_round_trips_through_index_and_search(es_client, es_index):
+    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index.index_documents(
         [
             _make_document(
-                user_id=user.id,
-                connection_id=connection_id,
+                doc_id=1,
+                user_id=1,
+                connection_id=1,
                 external_id="msg-1",
                 subject="Q3 renewal terms",
                 body_text="please review the renewal terms",
                 thread_id="thread-abc",
             ),
             _make_document(
-                user_id=user.id,
-                connection_id=connection_id,
+                doc_id=2,
+                user_id=1,
+                connection_id=1,
                 external_id="msg-2",
                 subject="Re: approved",
                 body_text="sounds good, approved",
                 thread_id="thread-abc",
             ),
-        ]
+        ],
+        SourceType.GMAIL,
+        "a@gmail.com",
     )
-    db_session.commit()
 
-    search = SearchDocuments(SearchIndexSqlite(db_session))
-    hits = search.execute(user.id, "renewal")
+    search = SearchDocuments(search_index)
+    hits = search.execute(1, "renewal")
 
     assert len(hits) == 1
     assert hits[0].document.thread_id == "thread-abc"
 
 
-def test_query_with_fts5_special_characters_does_not_error(db_session):
-    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
-    db_session.commit()
-    connection_id = _make_connection(db_session, user.id, "a@gmail.com")
-    doc_repo = DocumentRepositorySqlite(db_session)
-    doc_repo.upsert_many(
+def test_search_highlights_matches_with_bracket_markers(es_client, es_index):
+    # The frontend's renderSnippet() JS turns "[" / "]" into <strong> tags —
+    # this pins ES's highlight config to those exact markers (see
+    # specs/elasticsearch-search.md §5), not its default <em> tags.
+    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index.index_documents(
         [
             _make_document(
-                user_id=user.id,
-                connection_id=connection_id,
+                doc_id=1,
+                user_id=1,
+                connection_id=1,
+                external_id="msg-1",
+                subject="Q3 renewal terms",
+                body_text="please review the renewal terms",
+            )
+        ],
+        SourceType.GMAIL,
+        "a@gmail.com",
+    )
+
+    hits = SearchDocuments(search_index).execute(1, "renewal")
+
+    assert len(hits) == 1
+    assert "[renewal]" in hits[0].snippet.lower()
+
+
+def test_query_with_special_characters_does_not_error(es_client, es_index):
+    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index.index_documents(
+        [
+            _make_document(
+                doc_id=1,
+                user_id=1,
+                connection_id=1,
                 external_id="msg-1",
                 subject="Q3 renewal",
                 body_text="terms: 24 months",
             )
-        ]
+        ],
+        SourceType.GMAIL,
+        "a@gmail.com",
     )
-    db_session.commit()
 
-    search = SearchDocuments(SearchIndexSqlite(db_session))
-    hits = search.execute(user.id, 'terms: "24" -months*')
+    search = SearchDocuments(search_index)
+    hits = search.execute(1, 'terms: "24" -months*')
 
-    assert isinstance(hits, list)  # must not raise a FTS5 syntax error
+    assert isinstance(hits, list)  # must not raise a query-syntax error

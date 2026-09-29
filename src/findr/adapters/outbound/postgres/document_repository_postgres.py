@@ -1,29 +1,33 @@
 from __future__ import annotations
 
 from sqlalchemy import delete
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session as DbSession
 
-from findr.adapters.outbound.sqlite.models import DocumentModel
+from findr.adapters.outbound.postgres.models import DocumentModel
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.domain.entities import Document
 from findr.ports.clock import Clock
 
 
-class DocumentRepositorySqlite:
+class DocumentRepositoryPostgres:
     """Implements ports.document_repository.DocumentRepository.
 
-    Upserts use INSERT ... ON CONFLICT DO UPDATE (never INSERT OR REPLACE)
-    so the documents_fts sync triggers in schema.sql fire correctly.
+    upsert_many returns the persisted documents with their real Postgres
+    ids populated (via RETURNING) — required by specs/elasticsearch-search.md
+    §2/§3.1: Elasticsearch's document _id is the Postgres documents.id, which
+    doesn't exist until after this write, so SyncSource needs it back to
+    index correctly (the id=0 placeholder every connector sets would
+    otherwise collide every document in a batch onto the same ES _id).
     """
 
     def __init__(self, db: DbSession, clock: Clock | None = None) -> None:
         self._db = db
         self._clock = clock or SystemClock()
 
-    def upsert_many(self, documents: list[Document]) -> None:
+    def upsert_many(self, documents: list[Document]) -> list[Document]:
         for doc in documents:
-            stmt = sqlite_insert(DocumentModel).values(
+            stmt = pg_insert(DocumentModel).values(
                 user_id=doc.user_id,
                 connection_id=doc.connection_id,
                 external_id=doc.external_id,
@@ -44,9 +48,10 @@ class DocumentRepositorySqlite:
                     "body_text": stmt.excluded.body_text,
                     "sent_at": stmt.excluded.sent_at,
                 },
-            )
-            self._db.execute(stmt)
+            ).returning(DocumentModel.id)
+            doc.id = self._db.execute(stmt).scalar_one()
         self._db.flush()
+        return documents
 
     def delete_many(self, connection_id: int, external_ids: list[str]) -> None:
         if not external_ids:

@@ -1,18 +1,27 @@
+from elasticsearch import Elasticsearch
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from findr.adapters.inbound.http.deps import get_current_user, get_db_session, get_settings
+from findr.adapters.inbound.http.deps import (
+    get_current_user,
+    get_db_session,
+    get_es_client,
+    get_settings,
+)
 from findr.adapters.outbound.connector_factory import connector_for, oauth_provider_for
 from findr.adapters.outbound.crypto.token_cipher import TokenCipher
-from findr.adapters.outbound.sqlite.credential_store_sqlite import CredentialStoreSqlite
-from findr.adapters.outbound.sqlite.document_repository_sqlite import DocumentRepositorySqlite
-from findr.adapters.outbound.sqlite.oauth_state_repository_sqlite import (
-    OAuthStateRepositorySqlite,
+from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
+from findr.adapters.outbound.postgres.credential_store_postgres import CredentialStorePostgres
+from findr.adapters.outbound.postgres.document_repository_postgres import (
+    DocumentRepositoryPostgres,
 )
-from findr.adapters.outbound.sqlite.source_connection_repo_sqlite import (
-    SourceConnectionRepositorySqlite,
+from findr.adapters.outbound.postgres.oauth_state_repository_postgres import (
+    OAuthStateRepositoryPostgres,
+)
+from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
+    SourceConnectionRepositoryPostgres,
 )
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.application.sources.connect_gmail import BeginGmailConnect, CompleteGmailConnect
@@ -29,8 +38,8 @@ from findr.domain.value_objects import ConnectionStatus, SourceType
 router = APIRouter(prefix="/sources", tags=["sources"])
 
 
-def _credential_store(db: Session, settings: Settings) -> CredentialStoreSqlite:
-    return CredentialStoreSqlite(db, TokenCipher(settings.token_encryption_key))
+def _credential_store(db: Session, settings: Settings) -> CredentialStorePostgres:
+    return CredentialStorePostgres(db, TokenCipher(settings.token_encryption_key))
 
 
 class SourceConnectionResponse(BaseModel):
@@ -64,7 +73,7 @@ def _to_response(connection: SourceConnection) -> SourceConnectionResponse:
 def list_sources(
     user: User = Depends(get_current_user), db: Session = Depends(get_db_session)
 ) -> list[SourceConnectionResponse]:
-    connections = ListConnections(SourceConnectionRepositorySqlite(db)).execute(user.id)
+    connections = ListConnections(SourceConnectionRepositoryPostgres(db)).execute(user.id)
     return [_to_response(c) for c in connections]
 
 
@@ -75,7 +84,7 @@ def gmail_connect(
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
     use_case = BeginGmailConnect(
-        oauth_provider_for(SourceType.GMAIL, settings), OAuthStateRepositorySqlite(db)
+        oauth_provider_for(SourceType.GMAIL, settings), OAuthStateRepositoryPostgres(db)
     )
     authorize_url = use_case.execute(user.id)
     db.commit()
@@ -94,8 +103,8 @@ def gmail_callback(
     # session cookie happens to be current when Google redirects back.
     use_case = CompleteGmailConnect(
         oauth_provider_for(SourceType.GMAIL, settings),
-        OAuthStateRepositorySqlite(db),
-        SourceConnectionRepositorySqlite(db),
+        OAuthStateRepositoryPostgres(db),
+        SourceConnectionRepositoryPostgres(db),
         _credential_store(db, settings),
     )
     try:
@@ -117,7 +126,7 @@ def slack_connect(
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
     use_case = BeginSlackConnect(
-        oauth_provider_for(SourceType.SLACK, settings), OAuthStateRepositorySqlite(db)
+        oauth_provider_for(SourceType.SLACK, settings), OAuthStateRepositoryPostgres(db)
     )
     authorize_url = use_case.execute(user.id)
     db.commit()
@@ -135,8 +144,8 @@ def slack_callback(
     # callback above.
     use_case = CompleteSlackConnect(
         oauth_provider_for(SourceType.SLACK, settings),
-        OAuthStateRepositorySqlite(db),
-        SourceConnectionRepositorySqlite(db),
+        OAuthStateRepositoryPostgres(db),
+        SourceConnectionRepositoryPostgres(db),
         _credential_store(db, settings),
     )
     try:
@@ -158,7 +167,7 @@ def notion_connect(
     settings: Settings = Depends(get_settings),
 ) -> RedirectResponse:
     use_case = BeginNotionConnect(
-        oauth_provider_for(SourceType.NOTION, settings), OAuthStateRepositorySqlite(db)
+        oauth_provider_for(SourceType.NOTION, settings), OAuthStateRepositoryPostgres(db)
     )
     authorize_url = use_case.execute(user.id)
     db.commit()
@@ -176,8 +185,8 @@ def notion_callback(
     # callback above.
     use_case = CompleteNotionConnect(
         oauth_provider_for(SourceType.NOTION, settings),
-        OAuthStateRepositorySqlite(db),
-        SourceConnectionRepositorySqlite(db),
+        OAuthStateRepositoryPostgres(db),
+        SourceConnectionRepositoryPostgres(db),
         _credential_store(db, settings),
     )
     try:
@@ -198,12 +207,13 @@ def resync(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
+    es_client: Elasticsearch = Depends(get_es_client),
 ) -> SourceConnectionResponse:
     """Manually triggers an immediate sync for one connection, instead of
     waiting for the next scheduler tick (up to FINDR_SYNC_INTERVAL_SECONDS
     away) — same SyncSource the background scheduler uses, just run
     synchronously for one connection on request."""
-    connection_repo = SourceConnectionRepositorySqlite(db)
+    connection_repo = SourceConnectionRepositoryPostgres(db)
     connection = connection_repo.get(connection_id, user.id)
     if connection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
@@ -218,7 +228,8 @@ def resync(
         oauth_provider_for(connection.source_type, settings),
         _credential_store(db, settings),
         connection_repo,
-        DocumentRepositorySqlite(db),
+        DocumentRepositoryPostgres(db),
+        ElasticsearchIndex(es_client, settings.elasticsearch_index),
         SystemClock(),
     )
     use_case.execute(connection)
@@ -236,7 +247,7 @@ def disconnect(
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    connection_repo = SourceConnectionRepositorySqlite(db)
+    connection_repo = SourceConnectionRepositoryPostgres(db)
     connection = connection_repo.get(connection_id, user.id)
     if connection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")

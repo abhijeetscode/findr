@@ -5,6 +5,7 @@ from findr.ports.clock import Clock
 from findr.ports.credential_store import CredentialStore
 from findr.ports.document_repository import DocumentRepository
 from findr.ports.oauth_provider import OAuthProvider
+from findr.ports.search_index import SearchIndex
 from findr.ports.source_connection_repo import SourceConnectionRepository
 from findr.ports.source_connector import SourceConnector
 
@@ -26,6 +27,7 @@ class SyncSource:
         credential_store: CredentialStore,
         connection_repo: SourceConnectionRepository,
         document_repo: DocumentRepository,
+        search_index: SearchIndex,
         clock: Clock,
     ) -> None:
         self._connector = connector
@@ -33,6 +35,7 @@ class SyncSource:
         self._credential_store = credential_store
         self._connection_repo = connection_repo
         self._document_repo = document_repo
+        self._search_index = search_index
         self._clock = clock
 
     def execute(self, connection: SourceConnection) -> None:
@@ -58,9 +61,13 @@ class SyncSource:
                 batch = self._connector.fetch_changes(credentials, None)
 
             if batch.upserts:
-                self._document_repo.upsert_many(batch.upserts)
+                persisted = self._document_repo.upsert_many(batch.upserts)
+                self._search_index.index_documents(
+                    persisted, connection.source_type, connection.external_account
+                )
             if batch.deleted_external_ids:
                 self._document_repo.delete_many(connection.id, batch.deleted_external_ids)
+                self._search_index.delete_documents(connection.id, batch.deleted_external_ids)
 
             self._connection_repo.update_cursor(connection.id, batch.new_cursor, self._clock.now())
             self._connection_repo.update_status(connection.id, ConnectionStatus.ACTIVE)
