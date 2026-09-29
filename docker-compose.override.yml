@@ -1,0 +1,21 @@
+# Auto-merged into docker-compose.yml by Docker Compose whenever both files
+# are present — `docker compose up` picks this up with no extra flag, so
+# local dev gets hot-reload by default. For the plain production-style
+# container (no bind mount, no --reload), exclude this file explicitly:
+#   docker compose -f docker-compose.yml up --build
+services:
+  app:
+    volumes:
+      - ./src:/app/src
+    command:
+      [
+        "uvicorn",
+        "findr.adapters.inbound.http.app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/src",
+      ]
