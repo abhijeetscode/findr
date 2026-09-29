@@ -10,6 +10,16 @@ from typing import Any
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Quoted-reply detection (specs/gmail-quote-stripping.md). Heuristic, not a
+# guaranteed-correct parser — see that spec's Edge cases for known trade-offs.
+_QUOTE_DELIMITER_RE = re.compile(
+    r"^\s*On .+ wrote:\s*$"
+    r"|^\s*-{2,}\s*Original Message\s*-{2,}\s*$"
+    r"|^>",
+    re.IGNORECASE | re.MULTILINE,
+)
+_GMAIL_QUOTE_HTML_RE = re.compile(r'<div class="gmail_quote".*', re.IGNORECASE | re.DOTALL)
+
 
 @dataclass
 class ParsedMessage:
@@ -19,6 +29,7 @@ class ParsedMessage:
     recipients: str | None
     body_text: str
     sent_at: datetime | None
+    thread_id: str  # always present on a Gmail message resource
 
 
 def parse_gmail_message(message: dict[str, Any]) -> ParsedMessage:
@@ -35,6 +46,7 @@ def parse_gmail_message(message: dict[str, Any]) -> ParsedMessage:
         recipients=_header(headers, "To"),
         body_text=_extract_body_text(payload),
         sent_at=_parse_date(_header(headers, "Date")),
+        thread_id=message["threadId"],
     )
 
 
@@ -79,12 +91,30 @@ def _strip_html(html: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
 
 
+def _strip_quoted_plain(text: str) -> str:
+    """Truncates at the first quoted-reply delimiter (specs/gmail-quote-stripping.md
+    §2) — everything from there on is prior messages in the thread, not this
+    message's own content."""
+    match = _QUOTE_DELIMITER_RE.search(text)
+    return text[: match.start()].rstrip() if match else text
+
+
+def _strip_quoted_html(html: str) -> str:
+    """Removes Gmail's own `<div class="gmail_quote">` wrapper (and
+    everything after it) before tag-stripping — a reliable, Gmail-specific
+    signal, not a guess about formatting."""
+    match = _GMAIL_QUOTE_HTML_RE.search(html)
+    return html[: match.start()] if match else html
+
+
 def _extract_body_text(payload: dict[str, Any]) -> str:
-    """Prefer text/plain; fall back to a naive tag-strip of text/html."""
+    """Prefer text/plain; fall back to a naive tag-strip of text/html. Quoted
+    reply content is stripped from whichever part is used — see
+    specs/gmail-quote-stripping.md."""
     plain = _find_part_body(payload, "text/plain")
     if plain is not None:
-        return plain
+        return _strip_quoted_plain(plain)
     html = _find_part_body(payload, "text/html")
     if html is not None:
-        return _strip_html(html)
+        return _strip_html(_strip_quoted_html(html))
     return ""

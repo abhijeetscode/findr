@@ -190,6 +190,7 @@ class GmailConnector:
             recipients=parsed.recipients,
             body_text=parsed.body_text,
             sent_at=parsed.sent_at,
+            thread_id=parsed.thread_id,
         )
 
     def _get(

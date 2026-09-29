@@ -32,6 +32,7 @@ class DocumentRepositorySqlite:
                 recipients=doc.recipients,
                 body_text=doc.body_text,
                 sent_at=doc.sent_at,
+                thread_id=doc.thread_id,
                 created_at=self._clock.now(),
             )
             stmt = stmt.on_conflict_do_update(

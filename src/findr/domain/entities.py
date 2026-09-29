@@ -45,6 +45,11 @@ class Document:
     recipients: str | None
     body_text: str | None
     sent_at: datetime | None
+    # Conversation-grouping key (Gmail's threadId). Flat, not a parent/child
+    # pointer — every message in a conversation shares one value. None for
+    # connectors that don't populate it yet (Slack/Notion — out of scope,
+    # see specs/gmail-thread-id.md).
+    thread_id: str | None = None
 
 
 @dataclass

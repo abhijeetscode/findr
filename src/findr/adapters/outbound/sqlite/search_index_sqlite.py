@@ -14,7 +14,7 @@ _TOKEN_RE = re.compile(r"\S+")
 _SEARCH_SQL = text(
     """
     SELECT d.id, d.user_id, d.connection_id, d.external_id,
-           d.subject, d.sender, d.recipients, d.body_text, d.sent_at,
+           d.subject, d.sender, d.recipients, d.body_text, d.sent_at, d.thread_id,
            sc.source_type AS source_type,
            sc.external_account AS external_account,
            snippet(documents_fts, 2, '[', ']', '…', 10) AS snippet,
@@ -71,6 +71,7 @@ class SearchIndexSqlite:
                 # processor, so the driver hands back the stored string
                 # as-is rather than a datetime — parse it explicitly.
                 sent_at=datetime.fromisoformat(row.sent_at) if row.sent_at else None,
+                thread_id=row.thread_id,
             )
             # bm25() is more-negative-is-better; flip sign so a higher
             # SearchHit.score means more relevant.

@@ -19,7 +19,7 @@ def _make_connection(db_session, user_id: int, email: str) -> int:
     return connection.id
 
 
-def _make_document(*, user_id, connection_id, external_id, subject, body_text) -> Document:
+def _make_document(*, user_id, connection_id, external_id, subject, body_text, thread_id=None) -> Document:
     return Document(
         id=0,  # ignored on insert; SQLite assigns the real id
         user_id=user_id,
@@ -30,6 +30,7 @@ def _make_document(*, user_id, connection_id, external_id, subject, body_text) -
         recipients=None,
         body_text=body_text,
         sent_at=datetime(2024, 1, 1),
+        thread_id=thread_id,
     )
 
 
@@ -138,6 +139,40 @@ def test_delete_many_removes_from_search(db_session):
     db_session.commit()
 
     assert search.execute(user.id, "trashed") == []
+
+
+def test_thread_id_round_trips_through_upsert_and_search(db_session):
+    user = UserRepositorySqlite(db_session).create("a@example.com", "hash")
+    db_session.commit()
+    connection_id = _make_connection(db_session, user.id, "a@gmail.com")
+    doc_repo = DocumentRepositorySqlite(db_session)
+    doc_repo.upsert_many(
+        [
+            _make_document(
+                user_id=user.id,
+                connection_id=connection_id,
+                external_id="msg-1",
+                subject="Q3 renewal terms",
+                body_text="please review the renewal terms",
+                thread_id="thread-abc",
+            ),
+            _make_document(
+                user_id=user.id,
+                connection_id=connection_id,
+                external_id="msg-2",
+                subject="Re: approved",
+                body_text="sounds good, approved",
+                thread_id="thread-abc",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    search = SearchDocuments(SearchIndexSqlite(db_session))
+    hits = search.execute(user.id, "renewal")
+
+    assert len(hits) == 1
+    assert hits[0].document.thread_id == "thread-abc"
 
 
 def test_query_with_fts5_special_characters_does_not_error(db_session):

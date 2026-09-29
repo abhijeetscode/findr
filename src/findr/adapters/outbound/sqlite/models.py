@@ -80,4 +80,5 @@ class DocumentModel(Base):
     recipients: Mapped[str | None]
     body_text: Mapped[str | None]
     sent_at: Mapped[datetime | None]
+    thread_id: Mapped[str | None] = mapped_column(index=True)
     created_at: Mapped[datetime]

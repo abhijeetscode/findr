@@ -24,11 +24,12 @@ def _make_transport(fixtures: dict[str, list[httpx.Response]]) -> httpx.MockTran
 CREDENTIALS = Credentials(access_token="ya29.token", refresh_token="r", expires_at=datetime(2030, 1, 1))
 
 
-def _message_response(message_id: str) -> httpx.Response:
+def _message_response(message_id: str, thread_id: str | None = None) -> httpx.Response:
     return httpx.Response(
         200,
         json={
             "id": message_id,
+            "threadId": thread_id or message_id,
             "payload": {
                 "headers": [
                     {"name": "Subject", "value": f"Subject {message_id}"},
@@ -65,6 +66,25 @@ def test_initial_sync_skips_a_message_that_fails_to_fetch_instead_of_discarding_
 
     assert [doc.external_id for doc in batch.upserts] == ["m1", "m3"]
     assert batch.new_cursor == "1000"
+
+
+def test_fetched_documents_carry_the_gmail_thread_id():
+    transport = _make_transport(
+        {
+            "/gmail/v1/users/me/profile": [httpx.Response(200, json={"historyId": "1000"})],
+            "/gmail/v1/users/me/messages": [
+                httpx.Response(200, json={"messages": [{"id": "m1"}, {"id": "m2"}]})
+            ],
+            # m1 and m2 are two replies in the same conversation — same threadId.
+            "/gmail/v1/users/me/messages/m1": [_message_response("m1", thread_id="thread-1")],
+            "/gmail/v1/users/me/messages/m2": [_message_response("m2", thread_id="thread-1")],
+        }
+    )
+    connector = GmailConnector(user_id=10, connection_id=1, transport=transport)
+
+    batch = connector.fetch_changes(CREDENTIALS, cursor=None)
+
+    assert [doc.thread_id for doc in batch.upserts] == ["thread-1", "thread-1"]
 
 
 def test_rate_limited_message_is_retried_once_after_a_cooldown():
