@@ -124,6 +124,7 @@ Same split as every other adapter in this codebase: `EmbeddingProvider`'s local 
 - **Empty text (§6):** the model embeds `""` without error, but a document with no subject and no body is indexed **without** an `embedding` field (BM25-only). A meaningless vector would only add noise to kNN. Documents without the field are skipped by kNN.
 - **Vectors are excluded from `_source` in search responses** (`_source.excludes: ["embedding"]`), so each search doesn't ship 50×1024 floats back.
 - **`ensure_index` on an existing index** calls `put_mapping` with the `embedding` field. This is additive and idempotent, as §1 drafted.
+- **Device:** picked at load time by `detect_device()` — MPS (Apple silicon), then CUDA, then CPU. The Docker image ships CPU-only torch, so it always runs on CPU; a Mac dev machine uses MPS.
 - **Wiring:** one `SentenceTransformerEmbeddingProvider` per process, on `app.state.embedding_provider`, shared by request handlers and the in-process scheduler (the model isn't loaded twice). `scripts/reindex_search.py` builds its own. Both go through a module-level `build_embedding_provider(settings)` so tests can swap in a fake.
 - **Testing:** every test except the embedding adapter's own tests and the one real-semantic test uses a deterministic hashed bag-of-words `FakeEmbeddingProvider` (`tests/conftest.py`). Texts with disjoint vocabularies score ~0 cosine, below the floor, so existing keyword tests still mean "no shared words, no hit". The real model is loaded once per test session, and only by tests that need it.
 - **Docker:**

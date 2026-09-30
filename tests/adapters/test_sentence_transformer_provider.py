@@ -26,3 +26,18 @@ def test_query_and_document_encodings_differ(real_embedding_provider):
 
 def test_empty_text_does_not_error(real_embedding_provider):
     assert len(real_embedding_provider.embed_document("")) == 1024
+
+
+def test_detect_device_prefers_mps_then_cuda_then_cpu(monkeypatch):
+    import torch
+
+    from findr.adapters.outbound.embeddings.sentence_transformer_provider import detect_device
+
+    def available(mps: bool, cuda: bool) -> str:
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+        return detect_device()
+
+    assert available(mps=True, cuda=True) == "mps"
+    assert available(mps=False, cuda=True) == "cuda"
+    assert available(mps=False, cuda=False) == "cpu"

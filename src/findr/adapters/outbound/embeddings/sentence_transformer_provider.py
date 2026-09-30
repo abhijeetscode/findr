@@ -1,6 +1,23 @@
 from __future__ import annotations
 
+import logging
+
 from findr.adapters.outbound.elasticsearch.es_client import EMBEDDING_DIMS
+
+logger = logging.getLogger(__name__)
+
+
+def detect_device() -> str:
+    """Best available torch device: Apple-silicon GPU (MPS), then NVIDIA GPU
+    (CUDA), then CPU. The Docker image ships CPU-only torch, so it always
+    lands on "cpu" there; a Mac dev machine gets "mps"."""
+    import torch
+
+    if torch.backends.mps.is_available():
+        return "mps"
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
 
 
 class SentenceTransformerEmbeddingProvider:
@@ -17,9 +34,11 @@ class SentenceTransformerEmbeddingProvider:
         # fake) don't pay torch's import cost.
         from sentence_transformers import SentenceTransformer
 
-        self._model = SentenceTransformer(model_name, device="cpu")
-        # Qwen3's native context is ~32k tokens; embedding that on CPU every
-        # sync is far too slow. Longer text is truncated (no chunking yet —
+        device = detect_device()
+        logger.info("Loading embedding model %s on %s", model_name, device)
+        self._model = SentenceTransformer(model_name, device=device)
+        # Qwen3's native context is ~32k tokens; embedding that every sync is
+        # far too slow, especially on CPU. Longer text is truncated (no chunking yet —
         # specs/semantic-search.md §1/§6).
         self._model.max_seq_length = max_seq_length
 
