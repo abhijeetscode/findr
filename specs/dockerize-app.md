@@ -36,8 +36,8 @@ The base `Dockerfile`/`docker-compose.yml` above build a production-style image:
 
 Multi-stage build, following Astral's documented pattern for `uv`-managed projects:
 
-1. **Builder stage** (`ghcr.io/astral-sh/uv:python3.14-bookworm-slim`): copy `pyproject.toml` + `uv.lock` first and run `uv sync --frozen --no-install-project --no-dev` (installs dependencies into `.venv`, cached as its own layer — only re-runs when lockfile/pyproject change, not on every source edit); then copy `src/` and run `uv sync --frozen --no-dev` to install the project itself into the same `.venv`.
-2. **Runtime stage** (`python:3.14-slim-bookworm`, no `uv` needed at runtime): copy the built `.venv` and `src/` from the builder stage, add `.venv/bin` to `PATH`, run as a non-root user, `CMD` runs `uvicorn findr.adapters.inbound.http.app:app --host 0.0.0.0 --port 8000` directly (no `uv run` — the venv is already on `PATH`).
+1. **Builder stage** (`ghcr.io/astral-sh/uv:python3.13-bookworm-slim`): copy `pyproject.toml` + `uv.lock` first and run `uv sync --frozen --no-install-project --no-dev` (installs dependencies into `.venv`, cached as its own layer — only re-runs when lockfile/pyproject change, not on every source edit); then copy `src/` and run `uv sync --frozen --no-dev` to install the project itself into the same `.venv`.
+2. **Runtime stage** (`python:3.13-slim-bookworm`, no `uv` needed at runtime): copy the built `.venv` and `src/` from the builder stage, add `.venv/bin` to `PATH`, run as a non-root user, `CMD` runs `uvicorn findr.adapters.inbound.http.app:app --host 0.0.0.0 --port 8000` directly (no `uv run` — the venv is already on `PATH`).
 
 Known risk, to resolve during implementation rather than design: `requires-python = ">=3.14"` is very new — if any dependency (`cryptography`, `argon2-cffi`) lacks a prebuilt wheel for `cp314` on the build platform, `uv sync` falls back to a source build, which may need a C toolchain (and, for `cryptography`, Rust) not present in the slim builder image. If that happens, the fix is adding `build-essential` (and `cargo`/`rustc` if needed) to the **builder** stage only — the runtime stage stays slim either way since it never runs `uv sync`.
 
@@ -97,3 +97,7 @@ __pycache__/
 **Automated**: none — this is infra, not app logic; the existing test suite (`uv run pytest`, run on the host against dockerized Postgres/ES per the prior migration) is unaffected and doesn't need the app itself containerized to pass.
 
 **Manual**: `docker compose up --build`, confirm all three containers report healthy/running, `curl localhost:8000/healthz` returns `{"error": false}`, log in as the seeded demo account, connect/sync/search against the containerized app exactly as verified against the host-run app in `specs/postgres-migration.md` §10 / `specs/elasticsearch-search.md` §11.
+
+## Update: Python 3.13
+
+The project moved from Python 3.14 to **3.13** (`requires-python = ">=3.13,<3.14"`, `.python-version`, both base images above). The reason is that `unstructured` (latest 0.27.10) declares `requires_python <3.14`. The upper bound keeps `uv` from resolving for 3.14, where that package can't install.

@@ -2,7 +2,7 @@
 
 Status: **Implemented** (branch `feature/file-upload-semantic-search`). Deviations from the draft are recorded at the end of this spec.
 Owner: findr
-Related: `CLAUDE.md` ("MVP scope: uploaded files + Gmail" — this spec is the "uploaded files" half, the last piece of the originally-scoped MVP), `specs/semantic-search.md` (sibling spec — uploaded documents are embedded and made semantically searchable the same way Gmail documents are; implemented together on one branch, same pattern as `postgres-migration.md`/`elasticsearch-search.md`), `specs/gmail-connector.md` (established the `SourceConnector`/`SourceConnection` shape this spec deliberately does *not* reuse — see §2).
+Related: `CLAUDE.md` ("MVP scope: uploaded files + Gmail" — this spec is the "uploaded files" half, the last piece of the originally-scoped MVP), `specs/semantic-search.md` (sibling spec — after its §12 revision, uploaded documents are the *only* documents that get embedded and searched semantically (hybrid keyword + semantic); Gmail stays keyword-only. Implemented together on one branch, same pattern as `postgres-migration.md`/`elasticsearch-search.md`), `specs/gmail-connector.md` (established the `SourceConnector`/`SourceConnection` shape this spec deliberately does *not* reuse — see §2).
 
 ## 1. Purpose & scope
 
@@ -21,7 +21,7 @@ Let a user upload a file (PDF, DOCX, TXT, Markdown) and have its text content be
 - Other file types (images, spreadsheets, `.eml`, `.zip` archives, ...) — additive later if wanted; the `TextExtractor` port is designed so adding one is a new branch, not a redesign (§2.2).
 - Editing/replacing an uploaded file's content after upload — re-upload as a new file if the content changes. No update flow.
 - File-size-based storage quotas per user, virus/malware scanning — real concerns for a multi-tenant production system, explicitly deferred (single-demo-user MVP; see §9).
-- Making semantic search actually work — that's `specs/semantic-search.md`. This spec only needs uploaded documents to land in Postgres + Elasticsearch through the *existing* keyword-search path; semantic search then applies uniformly to everything already in the index, uploads included, with no upload-specific work required on that side.
+- Making semantic search actually work — that's `specs/semantic-search.md`. This spec only needs uploaded documents to land in Postgres + Elasticsearch through the *existing* keyword-search path; semantic search then applies to uploaded documents, with no upload-specific work needed in this spec's code. After `semantic-search.md` §12, uploads are the only source that gets it.
 
 ## 2. Why not reuse `SourceConnector`?
 
@@ -158,3 +158,12 @@ Recorded at implementation time, per this project's practice of flagging where t
 - **Search results for uploads have `url: null`.** There's no download endpoint yet; the originals are stored so one can be added later.
 - **Frontend:** the "Upload files" button is now visible. It opens a multi-file picker and uploads one request per file, sequentially. Failures are reported together at the end.
 - **Docker:** new named volume `findr_uploads_data` at `/data/uploads`. The runtime image creates it and `chown`s it to `findr` before `USER findr`, so the volume isn't root-owned.
+
+## 11. Follow-on: chunking with Unstructured
+
+`specs/upload-chunking.md` (draft) changes this spec in three ways:
+- **Parsing:** the `TextExtractor` port and its `pypdf`/`python-docx` adapter (§4) are replaced by a `DocumentParser` backed by the `unstructured` library, adding OCR, table preservation and chunking.
+- **Asynchronous uploads:** the §4 use case is split in two. The request validates, stores and enqueues, returning `202`; a background worker (Taskiq on Redis) parses and indexes.
+- **Upload status:** `uploaded_files` gains a `status`, and parse failures become a `failed` status instead of a `422` (§5).
+
+The storage design here (§3) is otherwise unchanged.

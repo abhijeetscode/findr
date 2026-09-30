@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
@@ -14,7 +14,7 @@ COPY src/ ./src/
 COPY README.md ./
 RUN uv sync --frozen --no-dev
 
-FROM python:3.14-slim-bookworm AS runtime
+FROM python:3.13-slim-bookworm AS runtime
 
 RUN groupadd --system findr && useradd --system --gid findr findr
 # Mount points for the uploads and model-cache volumes (docker-compose.yml),
