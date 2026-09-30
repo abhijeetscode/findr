@@ -1,5 +1,5 @@
-from elasticsearch import Elasticsearch
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from findr.adapters.inbound.http.deps import (
     get_current_user,
     get_db_session,
-    get_es_client,
+    get_file_storage,
+    get_search_index,
     get_settings,
 )
 from findr.adapters.outbound.connector_factory import connector_for, oauth_provider_for
@@ -17,11 +18,19 @@ from findr.adapters.outbound.postgres.credential_store_postgres import Credentia
 from findr.adapters.outbound.postgres.document_repository_postgres import (
     DocumentRepositoryPostgres,
 )
+from findr.adapters.outbound.files.file_text_extractor import (
+    FileTextExtractor,
+    resolve_mime_type,
+)
+from findr.adapters.outbound.files.local_file_storage import LocalFileStorage
 from findr.adapters.outbound.postgres.oauth_state_repository_postgres import (
     OAuthStateRepositoryPostgres,
 )
 from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
     SourceConnectionRepositoryPostgres,
+)
+from findr.adapters.outbound.postgres.uploaded_file_repository_postgres import (
+    UploadedFileRepositoryPostgres,
 )
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.application.sources.connect_gmail import BeginGmailConnect, CompleteGmailConnect
@@ -30,9 +39,16 @@ from findr.application.sources.connect_slack import BeginSlackConnect, CompleteS
 from findr.application.sources.disconnect_source import DisconnectSource
 from findr.application.sources.list_connections import ListConnections
 from findr.application.sync.sync_source import SyncSource
+from findr.application.uploads.upload_file import UploadFile as UploadFileUseCase
 from findr.config import Settings
 from findr.domain.entities import SourceConnection, User
-from findr.domain.exceptions import ConnectionNotFound, InvalidOAuthState, SourceAuthError
+from findr.domain.exceptions import (
+    ConnectionNotFound,
+    ExtractionFailed,
+    InvalidOAuthState,
+    SourceAuthError,
+    UnsupportedFileType,
+)
 from findr.domain.value_objects import ConnectionStatus, SourceType
 
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -75,6 +91,58 @@ def list_sources(
 ) -> list[SourceConnectionResponse]:
     connections = ListConnections(SourceConnectionRepositoryPostgres(db)).execute(user.id)
     return [_to_response(c) for c in connections]
+
+
+class UploadResponse(BaseModel):
+    document_id: int
+    connection_id: int
+    filename: str
+    mime_type: str
+    file_size_bytes: int
+
+
+@router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=UploadResponse)
+async def upload_file(
+    file: UploadFile,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+    search_index: ElasticsearchIndex = Depends(get_search_index),
+    file_storage: LocalFileStorage = Depends(get_file_storage),
+) -> UploadResponse:
+    """Uploads one file as a searchable document, into the user's
+    lazily-created "Uploaded files" connection — see specs/file-upload.md."""
+    filename = file.filename or "untitled"
+    content = await file.read()
+    use_case = UploadFileUseCase(
+        FileTextExtractor(),
+        file_storage,
+        SourceConnectionRepositoryPostgres(db),
+        DocumentRepositoryPostgres(db),
+        UploadedFileRepositoryPostgres(db),
+        search_index,
+    )
+    try:
+        # Extraction and embedding are CPU-bound; keep them off the event loop.
+        document, uploaded = await run_in_threadpool(
+            use_case.execute,
+            user.id,
+            filename,
+            resolve_mime_type(filename, file.content_type),
+            content,
+        )
+    except (UnsupportedFileType, ExtractionFailed) as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    db.commit()
+    return UploadResponse(
+        document_id=document.id,
+        connection_id=document.connection_id,
+        filename=uploaded.original_filename,
+        mime_type=uploaded.mime_type,
+        file_size_bytes=uploaded.file_size_bytes,
+    )
 
 
 @router.get("/gmail/connect")
@@ -207,7 +275,7 @@ def resync(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
     settings: Settings = Depends(get_settings),
-    es_client: Elasticsearch = Depends(get_es_client),
+    search_index: ElasticsearchIndex = Depends(get_search_index),
 ) -> SourceConnectionResponse:
     """Manually triggers an immediate sync for one connection, instead of
     waiting for the next scheduler tick (up to FINDR_SYNC_INTERVAL_SECONDS
@@ -222,6 +290,11 @@ def resync(
             status_code=status.HTTP_409_CONFLICT,
             detail="Connection is disconnected; reconnect it first",
         )
+    if connection.source_type == SourceType.FILE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Uploaded files have nothing to sync; upload a new file instead",
+        )
 
     use_case = SyncSource(
         connector_for(connection.source_type, connection.user_id, connection.id),
@@ -229,7 +302,7 @@ def resync(
         _credential_store(db, settings),
         connection_repo,
         DocumentRepositoryPostgres(db),
-        ElasticsearchIndex(es_client, settings.elasticsearch_index),
+        search_index,
         SystemClock(),
     )
     use_case.execute(connection)
@@ -251,6 +324,13 @@ def disconnect(
     connection = connection_repo.get(connection_id, user.id)
     if connection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connection not found")
+    if connection.source_type == SourceType.FILE:
+        # No OAuth grant to revoke; per-file removal is DELETE /documents/{id}
+        # (specs/file-upload.md §2.3).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Uploaded files can't be disconnected; delete individual files instead",
+        )
 
     use_case = DisconnectSource(
         connection_repo,

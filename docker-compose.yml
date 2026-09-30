@@ -8,6 +8,10 @@ services:
     environment:
       FINDR_DATABASE_URL: postgresql+psycopg://findr:findr@postgres:5432/findr
       FINDR_ELASTICSEARCH_URL: http://elasticsearch:9200
+      FINDR_UPLOAD_STORAGE_ROOT: /data/uploads
+    volumes:
+      - findr_uploads_data:/data/uploads
+      - findr_model_cache:/data/hf-cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,3 +53,5 @@ services:
 volumes:
   findr_postgres_data:
   findr_es_data:
+  findr_uploads_data:
+  findr_model_cache:

@@ -76,3 +76,21 @@ class DocumentModel(Base):
     # for connectors that don't populate it (Slack/Notion, out of scope there).
     thread_id: Mapped[str | None] = mapped_column(index=True)
     created_at: Mapped[datetime]
+
+
+class UploadedFileModel(Base):
+    """File-specific metadata for an uploaded document — its own table rather
+    than nullable columns on documents, see specs/file-upload.md §3."""
+
+    __tablename__ = "uploaded_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id"), unique=True, index=True
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    original_filename: Mapped[str]
+    mime_type: Mapped[str]
+    file_size_bytes: Mapped[int]
+    storage_path: Mapped[str]
+    created_at: Mapped[datetime]

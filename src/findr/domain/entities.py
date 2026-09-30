@@ -53,6 +53,22 @@ class Document:
 
 
 @dataclass
+class UploadedFile:
+    """File-specific metadata for a Document that came from an upload — kept
+    out of Document itself so nothing on the search/indexing path needs to
+    know where a document came from. See specs/file-upload.md §3."""
+
+    id: int
+    document_id: int
+    user_id: int
+    original_filename: str
+    mime_type: str
+    file_size_bytes: int
+    storage_path: str
+    created_at: datetime
+
+
+@dataclass
 class SearchHit:
     document: Document
     snippet: str

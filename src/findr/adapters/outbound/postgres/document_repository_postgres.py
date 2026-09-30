@@ -63,3 +63,28 @@ class DocumentRepositoryPostgres:
             )
         )
         self._db.flush()
+
+    def get(self, document_id: int, user_id: int) -> Document | None:
+        row = self._db.get(DocumentModel, document_id)
+        if row is None or row.user_id != user_id:
+            return None
+        return _to_domain(row)
+
+    def delete_by_id(self, document_id: int) -> None:
+        self._db.execute(delete(DocumentModel).where(DocumentModel.id == document_id))
+        self._db.flush()
+
+
+def _to_domain(row: DocumentModel) -> Document:
+    return Document(
+        id=row.id,
+        user_id=row.user_id,
+        connection_id=row.connection_id,
+        external_id=row.external_id,
+        subject=row.subject,
+        sender=row.sender,
+        recipients=row.recipients,
+        body_text=row.body_text,
+        sent_at=row.sent_at,
+        thread_id=row.thread_id,
+    )

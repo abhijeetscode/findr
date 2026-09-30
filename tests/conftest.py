@@ -1,3 +1,6 @@
+import hashlib
+import math
+import re
 import uuid
 from collections.abc import Iterator
 
@@ -7,12 +10,60 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from findr.adapters.outbound.elasticsearch.es_client import ensure_index
+from findr.adapters.outbound.elasticsearch.es_client import EMBEDDING_DIMS, ensure_index
 from findr.adapters.outbound.postgres.db import create_db_engine, init_db
 from findr.adapters.outbound.postgres.models import Base
 
 TEST_DATABASE_URL = "postgresql+psycopg://findr:findr@localhost:5432/findr_test"
 TEST_ELASTICSEARCH_URL = "http://localhost:9200"
+
+
+class FakeEmbeddingProvider:
+    """Deterministic stand-in for the real ~1GB model: a hashed bag of
+    words, L2-normalised, at the real mapping's dimension. Texts sharing no
+    words get cosine similarity ~0, below ElasticsearchIndex's kNN floor — so
+    keyword-only tests keep meaning "no shared words, no hit" rather than
+    kNN matching every document. Only the one test that proves real
+    semantic matching loads the actual model (see real_embedding_provider)."""
+
+    def embed_document(self, text: str) -> list[float]:
+        return _hashed_bag_of_words(text)
+
+    def embed_query(self, text: str) -> list[float]:
+        return _hashed_bag_of_words(text)
+
+
+def _hashed_bag_of_words(text: str) -> list[float]:
+    vector = [0.0] * EMBEDDING_DIMS
+    for token in re.findall(r"[a-z0-9]+", text.lower()):
+        bucket = int(hashlib.md5(token.encode()).hexdigest(), 16) % EMBEDDING_DIMS
+        vector[bucket] += 1.0
+    norm = math.sqrt(sum(v * v for v in vector))
+    if norm == 0:
+        # Never all-zero: Elasticsearch rejects zero vectors under cosine.
+        vector[0] = 1.0
+        return vector
+    return [v / norm for v in vector]
+
+
+@pytest.fixture
+def fake_embedding_provider() -> FakeEmbeddingProvider:
+    return FakeEmbeddingProvider()
+
+
+@pytest.fixture(scope="session")
+def real_embedding_provider():
+    """The real local model — slow to load, so session-scoped and only used
+    by tests that need to prove actual semantic behaviour."""
+    from findr.adapters.outbound.embeddings.sentence_transformer_provider import (
+        SentenceTransformerEmbeddingProvider,
+    )
+    from findr.config import Settings
+
+    settings = Settings()
+    return SentenceTransformerEmbeddingProvider(
+        settings.embedding_model, settings.embedding_max_seq_length
+    )
 
 
 @pytest.fixture(scope="session")
@@ -81,7 +132,7 @@ def _truncate_all_tables(engine: Engine) -> None:
 
 
 @pytest.fixture
-def app_env(monkeypatch, test_engine: Engine, es_index: str) -> Iterator[None]:
+def app_env(monkeypatch, tmp_path, test_engine: Engine, es_index: str) -> Iterator[None]:
     """For tests that boot the whole app via TestClient — its lifespan
     creates its own engine/session_factory and Elasticsearch client,
     separate from the db_session/es_client fixtures above, so isolation has
@@ -91,9 +142,17 @@ def app_env(monkeypatch, test_engine: Engine, es_index: str) -> Iterator[None]:
     since anything this test commits through the app's own engine is a
     real commit outside any test-scoped transaction and would otherwise
     leak into whichever test runs next), and point it at a fresh, empty
-    Elasticsearch index (deleted afterward by the es_index fixture)."""
+    Elasticsearch index (deleted afterward by the es_index fixture).
+    Uploads go to a per-test temp dir, and the app's embedding model is
+    swapped for FakeEmbeddingProvider so each TestClient startup doesn't
+    load the real one."""
     monkeypatch.setenv("FINDR_DATABASE_URL", TEST_DATABASE_URL)
     monkeypatch.setenv("FINDR_ELASTICSEARCH_INDEX", es_index)
+    monkeypatch.setenv("FINDR_UPLOAD_STORAGE_ROOT", str(tmp_path / "uploads"))
+    monkeypatch.setattr(
+        "findr.adapters.inbound.http.app.build_embedding_provider",
+        lambda settings: FakeEmbeddingProvider(),
+    )
     _truncate_all_tables(test_engine)
     yield
     _truncate_all_tables(test_engine)

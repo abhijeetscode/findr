@@ -15,6 +15,11 @@ dependencies = [
     "tenacity>=8.2",
     "psycopg[binary]>=3.1",
     "elasticsearch>=8.15,<9",
+    "python-multipart>=0.0.9",
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+    "sentence-transformers>=6.0",
+    "torch>=2.9",
 ]
 
 [project.scripts]
@@ -25,6 +30,18 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
 ]
+
+# CPU-only torch on Linux (the Docker image) — the default PyPI wheel bundles
+# multiple GB of CUDA libraries this app never uses. macOS wheels are already
+# CPU/MPS-only, so dev machines keep resolving from PyPI. See
+# specs/semantic-search.md §3.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

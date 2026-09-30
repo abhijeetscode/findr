@@ -19,15 +19,26 @@ from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.application.sync.sync_source import SyncSource
 from findr.config import Settings
+from findr.domain.value_objects import SourceType
+from findr.ports.embedding_provider import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
 
-def _run_sync_tick(session_factory: sessionmaker, settings: Settings, es_client: Elasticsearch) -> None:
+def _run_sync_tick(
+    session_factory: sessionmaker,
+    settings: Settings,
+    es_client: Elasticsearch,
+    embedding_provider: EmbeddingProvider,
+) -> None:
     db = session_factory()
     try:
         connection_repo = SourceConnectionRepositoryPostgres(db)
-        connections = connection_repo.list_active()
+        # Uploaded-files connections have nothing external to pull — the
+        # upload endpoint already wrote everything (specs/file-upload.md §2.2).
+        connections = [
+            c for c in connection_repo.list_active() if c.source_type != SourceType.FILE
+        ]
         if not connections:
             # No active connections (e.g. no OAuth client id/secret
             # configured yet, or no one has connected anything) — skip
@@ -38,7 +49,9 @@ def _run_sync_tick(session_factory: sessionmaker, settings: Settings, es_client:
 
         credential_store = CredentialStorePostgres(db, TokenCipher(settings.token_encryption_key))
         document_repo = DocumentRepositoryPostgres(db)
-        search_index = ElasticsearchIndex(es_client, settings.elasticsearch_index)
+        search_index = ElasticsearchIndex(
+            es_client, settings.elasticsearch_index, embedding_provider
+        )
         clock = SystemClock()
 
         for connection in connections:
@@ -68,14 +81,17 @@ def _run_sync_tick(session_factory: sessionmaker, settings: Settings, es_client:
 
 
 def create_sync_scheduler(
-    session_factory: sessionmaker, settings: Settings, es_client: Elasticsearch
+    session_factory: sessionmaker,
+    settings: Settings,
+    es_client: Elasticsearch,
+    embedding_provider: EmbeddingProvider,
 ) -> BackgroundScheduler:
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         _run_sync_tick,
         "interval",
         seconds=settings.sync_interval_seconds,
-        args=[session_factory, settings, es_client],
+        args=[session_factory, settings, es_client, embedding_provider],
         id="source_sync_tick",
         max_instances=1,
         coalesce=True,

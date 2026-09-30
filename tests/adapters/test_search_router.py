@@ -94,7 +94,11 @@ def _seed_document(client, user_id: int, *, subject: str, body_text: str, sent_a
     finally:
         db.close()
 
-    search_index = ElasticsearchIndex(app.state.es_client, app.state.settings.elasticsearch_index)
+    search_index = ElasticsearchIndex(
+        app.state.es_client,
+        app.state.settings.elasticsearch_index,
+        app.state.embedding_provider,
+    )
     search_index.index_documents(persisted, SourceType.GMAIL, "a@gmail.com")
 
 

@@ -22,8 +22,11 @@ _spec.loader.exec_module(reindex_search)
 
 
 def test_reindex_search_backfills_postgres_documents_into_elasticsearch(
-    app_env, test_engine, es_client, es_index
+    app_env, monkeypatch, test_engine, es_client, es_index, fake_embedding_provider
 ):
+    monkeypatch.setattr(
+        reindex_search, "build_embedding_provider", lambda settings: fake_embedding_provider
+    )
     # Seeds Postgres directly with a real commit (through a plain,
     # non-transactional session against the shared findr_test database) so
     # the script's own, separately-constructed engine can see it — the
@@ -58,9 +61,14 @@ def test_reindex_search_backfills_postgres_documents_into_elasticsearch(
 
     reindex_search.main()
 
-    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
     hits = SearchDocuments(search_index).execute(user.id, "renewal")
     assert len(hits) == 1
     assert hits[0].document.subject == "Q3 renewal terms"
     assert hits[0].source_type == SourceType.GMAIL
     assert hits[0].external_account == "a@gmail.com"
+
+    # The backfill is also what gives pre-existing documents embeddings
+    # (specs/semantic-search.md §4).
+    stored = es_client.get(index=es_index, id=str(hits[0].document.id))
+    assert len(stored["_source"]["embedding"]) == 1024

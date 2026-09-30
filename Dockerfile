@@ -17,6 +17,14 @@ RUN uv sync --frozen --no-dev
 FROM python:3.14-slim-bookworm AS runtime
 
 RUN groupadd --system findr && useradd --system --gid findr findr
+# Mount points for the uploads and model-cache volumes (docker-compose.yml),
+# created and chowned here so the named volumes inherit findr ownership —
+# otherwise they'd mount root-owned and unwritable by the app user.
+RUN mkdir -p /data/uploads /data/hf-cache && chown -R findr:findr /data
+# The findr user is a --system user with no home directory, so point the
+# Hugging Face cache at the volume. The embedding model (~1.2GB) downloads
+# there on first startup and is reused across restarts and rebuilds.
+ENV HF_HOME=/data/hf-cache
 WORKDIR /app
 
 COPY --from=builder /app/.venv ./.venv

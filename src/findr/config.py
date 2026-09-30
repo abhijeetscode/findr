@@ -34,6 +34,27 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", validation_alias="FINDR_ENV")
     session_ttl_days: int = Field(default=14, validation_alias="FINDR_SESSION_TTL_DAYS")
 
+    # Where uploaded files' original bytes live — a Docker volume in
+    # docker-compose.yml. See specs/file-upload.md §3.
+    upload_storage_root: str = Field(
+        default="/data/uploads", validation_alias="FINDR_UPLOAD_STORAGE_ROOT"
+    )
+
+    # Local sentence-transformers model for semantic search — see
+    # specs/semantic-search.md §3. Its output dimension must match
+    # es_client.EMBEDDING_DIMS.
+    embedding_model: str = Field(
+        default="Qwen/Qwen3-Embedding-0.6B", validation_alias="FINDR_EMBEDDING_MODEL"
+    )
+    embedding_max_seq_length: int = Field(
+        default=512, validation_alias="FINDR_EMBEDDING_MAX_SEQ_LENGTH"
+    )
+    # Cosine-similarity floor for the kNN leg of hybrid search — see
+    # search_index_elasticsearch.DEFAULT_MIN_SIMILARITY.
+    semantic_min_similarity: float = Field(
+        default=0.4, validation_alias="FINDR_SEMANTIC_MIN_SIMILARITY"
+    )
+
     # There's no public sign-up; the app seeds a single fixed demo account on
     # startup (see app.py's lifespan) rather than exposing a /auth/register
     # endpoint. Override via env if you don't want the published defaults.
