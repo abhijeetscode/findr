@@ -376,7 +376,7 @@ a.result-card:hover {
          specs/upload-chunking.md §8.2. Ready uploads drop off the list. -->
     <div class="uploads-status" id="uploads-status"></div>
 
-    <!-- CONTENT: results + filters -->
+    <!-- CONTENT: results (+ filters, currently hidden) -->
     <div class="content-row">
 
       <!-- RESULTS -->
@@ -385,8 +385,10 @@ a.result-card:hover {
         <div id="results-list"></div>
       </div>
 
-      <!-- FILTERS -->
-      <div class="filters">
+      <!-- FILTERS — hidden: none of these controls are wired to search yet
+           (no source/file-type/date filtering in the API). Remove `hidden`
+           once they are. -->
+      <div class="filters hidden">
         <div style="font-size:14px; font-weight:700; color:#1B1C20;">Filters</div>
 
         <div>
@@ -434,12 +436,6 @@ a.result-card:hover {
           </div>
         </div>
 
-        <div style="height:1px; background:#EFEBDE;"></div>
-
-        <div style="border:1.5px dashed #D8D3C4; border-radius:10px; padding:18px 14px; display:flex; flex-direction:column; align-items:center; gap:6px; text-align:center;">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#B3AFA2" stroke-width="2"><path d="M12 19V6M6 11l6-6 6 6"></path><path d="M5 20h14"></path></svg>
-          <div style="font-size:12px; color:#8E8B80;">Drop files to add them to search</div>
-        </div>
       </div>
 
     </div>
