@@ -25,12 +25,11 @@ class SourceConnection:
     last_synced_at: datetime | None
     last_error: str | None
     created_at: datetime
-    # Human-readable label for display (e.g. "acme-corp (ada@acme.com)" for
-    # Slack, a workspace name for Notion). Separate from external_account,
-    # which is the dedup key used by get_by_account() and may not be
-    # friendly on its own (a Slack "{team_id}:{user_id}" pair, a Notion
-    # workspace_id UUID). None for connectors where external_account is
-    # already friendly (Gmail's email address).
+    # Human-readable label for display (e.g. "Uploaded files" for the
+    # uploads connection, which has no external account at all). Separate
+    # from external_account, which is the dedup key used by get_by_account()
+    # and needn't be friendly on its own. None for connectors where
+    # external_account is already friendly (Gmail's email address).
     display_name: str | None = None
 
 
@@ -75,8 +74,7 @@ class Document:
     sent_at: datetime | None
     # Conversation-grouping key (Gmail's threadId). Flat, not a parent/child
     # pointer — every message in a conversation shares one value. None for
-    # connectors that don't populate it yet (Slack/Notion — out of scope,
-    # see specs/gmail-thread-id.md).
+    # sources without conversations (uploads) — see specs/gmail-thread-id.md.
     thread_id: str | None = None
     # Passages used for semantic search. Empty for documents that aren't
     # chunked — every source except uploads (specs/semantic-search.md §12,
@@ -124,14 +122,13 @@ class SearchHit:
     document: Document
     snippet: str
     score: float
-    # Which connection's source type this hit came from (Gmail/Slack/
-    # Notion) — lives on SearchHit rather than Document because it's a
+    # Which connection's source type this hit came from (Gmail/uploaded
+    # file) — lives on SearchHit rather than Document because it's a
     # property of the connection, not the document itself. Needed so the UI
     # can render a per-result source badge.
     source_type: SourceType
-    # The connection's dedup key (Gmail email, Slack "{team_id}:{user_id}",
-    # Notion workspace_id) — needed to build a deep link back to the
-    # original item for some sources (e.g. Slack needs the team_id).
+    # The connection's dedup key (e.g. the Gmail address) — available for
+    # sources whose deep links back to the original item need it.
     external_account: str | None = None
 
 

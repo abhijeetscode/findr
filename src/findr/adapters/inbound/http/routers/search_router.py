@@ -18,18 +18,6 @@ def _source_url(hit: SearchHit) -> str | None:
     external_id = hit.document.external_id
     if hit.source_type == SourceType.GMAIL:
         return f"https://mail.google.com/mail/u/0/#all/{external_id}"
-    if hit.source_type == SourceType.NOTION:
-        return f"https://www.notion.so/{external_id.replace('-', '')}"
-    if hit.source_type == SourceType.SLACK:
-        # external_id is "{channel_id}:{ts}"; external_account is
-        # "{team_id}:{user_id}". Links to the channel, not the exact
-        # message — an exact-message permalink needs Slack's
-        # chat.getPermalink API, which isn't called here.
-        channel_id, _, _ts = external_id.partition(":")
-        team_id = (hit.external_account or "").split(":", 1)[0]
-        if not channel_id or not team_id:
-            return None
-        return f"https://app.slack.com/client/{team_id}/{channel_id}"
     return None
 
 

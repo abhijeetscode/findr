@@ -6,7 +6,7 @@ Related: `CLAUDE.md` (project goal, hexagonal architecture, spec-driven developm
 
 ## 1. Purpose & scope
 
-Let a Findr user connect their Gmail account so their email becomes searchable alongside other connected sources. This is the first source connector built, on a currently empty codebase, so it also establishes the hexagonal (ports & adapters) structure and the multi-user auth baseline that every later connector (Slack, WhatsApp, Google Drive) and later capability (semantic search, file uploads) will build on.
+Let a Findr user connect their Gmail account so their email becomes searchable alongside other connected sources. This is the first source connector built, on a currently empty codebase, so it also establishes the hexagonal (ports & adapters) structure and the multi-user auth baseline that every later connector (Slack at the time, since removed — see `specs/remove-slack-notion.md`; WhatsApp and Google Drive planned) and later capability (semantic search, file uploads) will build on.
 
 ### In scope
 - Minimal real user accounts (register/login/logout) with per-user data isolation.
@@ -16,7 +16,7 @@ Let a Findr user connect their Gmail account so their email becomes searchable a
 - Handling of token expiry/refresh, revoked access, rate limiting, dedup, and deletions (see §7).
 
 ### Out of scope (this feature)
-- Slack, WhatsApp, Google Drive connectors, and file uploads — later features. The `SourceConnector` port must accommodate them without rework, but no other connector is built here.
+- Slack, WhatsApp, Google Drive connectors, and file uploads — later features. (Slack was built later and then removed; see `specs/remove-slack-notion.md`.) The `SourceConnector` port must accommodate them without rework, but no other connector is built here.
 - Semantic/AI/vector search — `SearchIndex` is a separate port from `DocumentRepository` specifically so a vector-index adapter can be added later without touching domain/use-case code.
 - Gmail attachments — not fetched, not stored, not indexed.
 - Gmail push notifications (Pub/Sub) — polling via a background scheduler is sufficient for MVP.
@@ -72,7 +72,7 @@ class SearchHit:
 
 `domain/exceptions.py`: `InvalidCredentials`, `DuplicateUser`, `ConnectionNotFound`, `SourceAuthError` (raised when a connector's stored credentials are invalid/expired — the application layer catches this and transitions a connection to `NEEDS_REAUTH`).
 
-**Addendum (added alongside the Slack/Notion connectors, see their specs §5):** `SourceConnection` gained a `display_name: str | None = None` field, separate from `external_account`. For Gmail the two are the same (an email address is already a friendly label), so Gmail's `CompleteGmailConnect` just passes the email for both — this field exists because Slack's/Notion's dedup keys (`team_id:user_id`, a workspace UUID) aren't human-readable on their own.
+**Addendum (added alongside the Slack/Notion connectors, see their specs §5):** `SourceConnection` gained a `display_name: str | None = None` field, separate from `external_account`. For Gmail the two are the same (an email address is already a friendly label), so Gmail's `CompleteGmailConnect` just passes the email for both — this field exists because Slack's/Notion's dedup keys (`team_id:user_id`, a workspace UUID) aren't human-readable on their own. Slack/Notion have since been removed (see `specs/remove-slack-notion.md`); `display_name` stays, because the uploads connection now relies on it ("Uploaded files").
 
 ## 3. Ports (interfaces)
 

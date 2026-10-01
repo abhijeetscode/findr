@@ -18,7 +18,7 @@ Today, every synced email is stored as a fully independent row — a reply carri
 
 ### Out of scope (explicitly, per discussion)
 - **Any feature that *uses* `thread_id`** — grouping/collapsing search results by conversation (Elasticsearch's `collapse` query is the natural mechanism, if this is ever built), a "view whole conversation" UI. There is no current product requirement driving either; this spec captures the data because it's free right now, not because a feature needs it today. Building the feature is separate, future scope.
-- **Slack (`thread_ts`) and Notion (page hierarchy)** — explicitly out of scope per this conversation. Both have a conceptually similar but structurally different "grouping" notion (Slack: flat, like Gmail; Notion: a real parent-page tree, not a conversation) and are deferred to their own future spec if/when this gets extended past Gmail.
+- **Slack (`thread_ts`) and Notion (page hierarchy)** — explicitly out of scope per this conversation (both connectors since removed — see `specs/remove-slack-notion.md`). Both have a conceptually similar but structurally different "grouping" notion (Slack: flat, like Gmail; Notion: a real parent-page tree, not a conversation) and are deferred to their own future spec if/when this gets extended past Gmail.
 - **`In-Reply-To`/`References` headers** (the exact reply-to pointer and full ancestor chain, vs. `threadId`'s flat grouping) — see §3 for why `threadId` alone is judged sufficient for now.
 - **Stripping quoted reply text from `body_text`** — a related but distinct search-quality issue raised in the same discussion (replies quote prior messages, skewing BM25 term statistics across a thread). Not solved here — see `specs/gmail-quote-stripping.md`.
 - Does **not** affect BM25 ranking itself — `thread_id` is a grouping key, not a relevance signal. See §1's discussion in the conversation that produced this spec for the full reasoning.
@@ -40,7 +40,7 @@ class Document:
     thread_id: str | None = None   # new
 ```
 
-Nullable and defaulted: `Document` is shared across all three connectors, and Slack/Notion don't populate it (out of scope, §1). For Gmail specifically, it's effectively always present (§4) — the field is nullable at the type level because the entity is generic, not because Gmail ever omits it.
+Nullable and defaulted: `Document` is shared across all sources, and the others don't populate it (out of scope, §1; Slack/Notion since removed — see `specs/remove-slack-notion.md`). For Gmail specifically, it's effectively always present (§4) — the field is nullable at the type level because the entity is generic, not because Gmail ever omits it.
 
 ## 3. Why `threadId`, not `In-Reply-To`/`References`
 
@@ -125,7 +125,7 @@ Indexed from the start — a future "fetch the whole conversation" query (`WHERE
 - **Result grouping/collapsing by `thread_id`** (Elasticsearch `collapse` query) — no current requirement; revisit if search results being cluttered by same-thread duplicates becomes an actual observed problem.
 - **Quoted reply text inflating `body_text`** — now specced separately in `specs/gmail-quote-stripping.md`; not solved by capturing `thread_id` alone.
 - **`In-Reply-To`/`References` for exact reply-tree reconstruction** — deferred per §3; revisit only if a feature needs reply *order*, not just conversation *membership*.
-- **Slack `thread_ts` / Notion page hierarchy** — deferred, explicitly out of scope (§1); would need their own spec.
+- ~~**Slack `thread_ts` / Notion page hierarchy** — deferred, explicitly out of scope (§1); would need their own spec.~~ No longer applicable: both connectors were removed (`specs/remove-slack-notion.md`).
 
 ## 9. Verification
 

@@ -26,7 +26,7 @@ Parsing, OCR, table detection and chunking all use the **`unstructured`** librar
 - Docker changes: Redis service, worker service, and OCR system packages.
 
 ### Out of scope
-- Chunking or background-processing Gmail (or Slack/Notion). Gmail stays keyword-only (`semantic-search.md` §12) and keeps syncing via the existing scheduler.
+- Chunking or background-processing Gmail. Gmail stays keyword-only (`semantic-search.md` §12) and keeps syncing via the existing scheduler.
 - **New upload types**, e.g. images (PNG/JPG) or scanned TIFFs. The OCR stack would support them, but that's a follow-up (§12).
 - **OCR of images embedded inside DOCX files.**
 - **OCR languages other than English.**

@@ -33,8 +33,6 @@ from findr.adapters.outbound.postgres.uploaded_file_repository_postgres import (
 )
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.application.sources.connect_gmail import BeginGmailConnect, CompleteGmailConnect
-from findr.application.sources.connect_notion import BeginNotionConnect, CompleteNotionConnect
-from findr.application.sources.connect_slack import BeginSlackConnect, CompleteSlackConnect
 from findr.application.sources.disconnect_source import DisconnectSource
 from findr.application.sources.list_connections import ListConnections
 from findr.application.sync.sync_source import SyncSource
@@ -171,88 +169,6 @@ def gmail_callback(
     # session cookie happens to be current when Google redirects back.
     use_case = CompleteGmailConnect(
         oauth_provider_for(SourceType.GMAIL, settings),
-        OAuthStateRepositoryPostgres(db),
-        SourceConnectionRepositoryPostgres(db),
-        _credential_store(db, settings),
-    )
-    try:
-        use_case.execute(code, state)
-    except InvalidOAuthState as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except SourceAuthError as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    db.commit()
-    return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
-
-
-@router.get("/slack/connect")
-def slack_connect(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    use_case = BeginSlackConnect(
-        oauth_provider_for(SourceType.SLACK, settings), OAuthStateRepositoryPostgres(db)
-    )
-    authorize_url = use_case.execute(user.id)
-    db.commit()
-    return RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
-
-
-@router.get("/slack/callback")
-def slack_callback(
-    code: str = Query(...),
-    state: str = Query(...),
-    db: Session = Depends(get_db_session),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    # Deliberately NOT behind get_current_user — same reasoning as Gmail's
-    # callback above.
-    use_case = CompleteSlackConnect(
-        oauth_provider_for(SourceType.SLACK, settings),
-        OAuthStateRepositoryPostgres(db),
-        SourceConnectionRepositoryPostgres(db),
-        _credential_store(db, settings),
-    )
-    try:
-        use_case.execute(code, state)
-    except InvalidOAuthState as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except SourceAuthError as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    db.commit()
-    return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
-
-
-@router.get("/notion/connect")
-def notion_connect(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    use_case = BeginNotionConnect(
-        oauth_provider_for(SourceType.NOTION, settings), OAuthStateRepositoryPostgres(db)
-    )
-    authorize_url = use_case.execute(user.id)
-    db.commit()
-    return RedirectResponse(authorize_url, status_code=status.HTTP_302_FOUND)
-
-
-@router.get("/notion/callback")
-def notion_callback(
-    code: str = Query(...),
-    state: str = Query(...),
-    db: Session = Depends(get_db_session),
-    settings: Settings = Depends(get_settings),
-) -> RedirectResponse:
-    # Deliberately NOT behind get_current_user — same reasoning as Gmail's
-    # callback above.
-    use_case = CompleteNotionConnect(
-        oauth_provider_for(SourceType.NOTION, settings),
         OAuthStateRepositoryPostgres(db),
         SourceConnectionRepositoryPostgres(db),
         _credential_store(db, settings),

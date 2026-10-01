@@ -40,7 +40,7 @@ This is still the **only** new port. `SearchIndex.index_documents(documents, sou
 - `index_documents`: for each document, `embedding_provider.embed_document(doc.body_text or "")` before building the bulk action, storing the vector under a new `embedding` field in `_source`. **Revised (§12):** only for uploaded files. Everything else is indexed without a vector.
 - `search`: `embedding_provider.embed_query(query)` once, then issues the hybrid query (§5) instead of the plain `multi_match`.
 
-**Consequence**: `SyncSource` (Gmail/Slack/Notion sync) and `UploadFile` (`specs/file-upload.md`) call `search_index.index_documents(...)` exactly as they already do today — neither needs to know embeddings exist. This is what "keep indexing/retrieval behind a port" was for; this spec is the payoff, not a new architectural decision.
+**Consequence**: `SyncSource` (Gmail sync) and `UploadFile` (`specs/file-upload.md`) call `search_index.index_documents(...)` exactly as they already do today — neither needs to know embeddings exist. This is what "keep indexing/retrieval behind a port" was for; this spec is the payoff, not a new architectural decision.
 
 ## 3. Embedding model
 
@@ -95,7 +95,7 @@ Same split as every other adapter in this codebase: `EmbeddingProvider`'s local 
 - Chunking long documents into multiple embedded windows, to stop losing relevance on content past the model's max sequence length — real limitation (§1, §6), deferred until it's observed to matter.
 - Cross-encoder re-ranking of RRF's combined top-k for higher precision — a further-future refinement, not needed for this to be a real improvement over BM25-only.
 - Batched/async embedding computation if `reindex_search.py` or live sync throughput ever becomes a bottleneck at a larger document count than this project currently has.
-- Turning semantic search on for Gmail/Slack/Notion later. After §12 this means changing one constant in the search adapter, then reindexing. It was deliberately not made configurable (§12.3). The main cost is sync throughput on CPU; batched embedding (above) would likely be needed first.
+- Turning semantic search on for Gmail (or a future source) later. After §12 this means changing one constant in the search adapter, then reindexing. It was deliberately not made configurable (§12.3). The main cost is sync throughput on CPU; batched embedding (above) would likely be needed first.
 - Swapping the local model for a hosted embeddings API (Voyage/OpenAI) later, if model quality or CPU cost ever becomes a real constraint — the `EmbeddingProvider` port exists specifically so that's an adapter swap, not a redesign.
 
 ## 10. Verification
@@ -148,7 +148,6 @@ In practice, embedding every Gmail message on CPU in Docker makes Gmail sync slo
 |---|---|---|---|
 | Uploaded files (PDF, DOCX, TXT, Markdown) | yes | yes | yes |
 | Gmail | yes | **no** | **no** |
-| Slack / Notion | yes | no | no (out of scope for this revision; they follow the default) |
 
 - **Uploads keep hybrid search.** Keyword search still finds exact filenames and rare tokens such as invoice numbers, which semantic search can miss.
 - **Still one combined result list,** fused with RRF as in §11. No UI change and no API response change.

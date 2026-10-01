@@ -39,21 +39,8 @@ def test_source_url_for_gmail():
     )
 
 
-def test_source_url_for_notion_strips_dashes():
-    page_id = "550e8400-e29b-41d4-a716-446655440000"
-    assert _source_url(_hit(SourceType.NOTION, page_id)) == (
-        "https://www.notion.so/550e8400e29b41d4a716446655440000"
-    )
-
-
-def test_source_url_for_slack_uses_channel_and_team_id():
-    hit = _hit(SourceType.SLACK, "C123:1700000000.000100", external_account="T456:U789")
-    assert _source_url(hit) == "https://app.slack.com/client/T456/C123"
-
-
-def test_source_url_for_slack_returns_none_without_team_id():
-    hit = _hit(SourceType.SLACK, "C123:1700000000.000100", external_account=None)
-    assert _source_url(hit) is None
+def test_source_url_is_none_for_uploaded_files():
+    assert _source_url(_hit(SourceType.FILE, "0b1c2d3e-uuid")) is None
 
 
 def test_search_endpoint_requires_login(app_env):

@@ -12,6 +12,6 @@ class ChangeBatch:
 
 
 class SourceConnector(Protocol):
-    """Implemented once per connected source (Gmail now; Slack/Drive/etc. later)."""
+    """Implemented once per connected source (Gmail now; e.g. Google Drive later)."""
 
     def fetch_changes(self, credentials: Credentials, cursor: str | None) -> ChangeBatch: ...
