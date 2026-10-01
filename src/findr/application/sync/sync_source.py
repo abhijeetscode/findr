@@ -63,7 +63,10 @@ class SyncSource:
             if batch.upserts:
                 persisted = self._document_repo.upsert_many(batch.upserts)
                 self._search_index.index_documents(
-                    persisted, connection.source_type, connection.external_account
+                    persisted,
+                    connection.source_type,
+                    connection.external_account,
+                    connection.workspace_id,
                 )
             if batch.deleted_external_ids:
                 self._document_repo.delete_many(connection.id, batch.deleted_external_ids)

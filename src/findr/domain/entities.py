@@ -15,9 +15,22 @@ class User:
 
 
 @dataclass
+class Workspace:
+    """A named container inside one user's account — one per client. Every
+    connection and upload belongs to exactly one, and search never crosses
+    workspaces. See specs/workspaces.md."""
+
+    id: int
+    user_id: int
+    name: str
+    created_at: datetime
+
+
+@dataclass
 class SourceConnection:
     id: int
     user_id: int
+    workspace_id: int
     source_type: SourceType
     external_account: str | None
     status: ConnectionStatus
@@ -40,6 +53,9 @@ class ChunkMetadata:
     chunk_index: int
     document_version: int
     content_sha256: str
+    # Self-describing, like the version and hash: isolation itself is
+    # enforced on the parent document (specs/workspaces.md §3.1).
+    workspace_id: int
     filename: str
     mime_type: str
     page_start: int | None
@@ -80,6 +96,10 @@ class Document:
     # chunked — every source except uploads (specs/semantic-search.md §12,
     # specs/upload-chunking.md §4.2).
     chunks: list[DocumentChunk] = field(default_factory=list)
+    # Filled in when read from Postgres. On write the repository always takes
+    # it from the document's connection, so callers (connectors) leave it
+    # unset — see specs/workspaces.md §3.2.
+    workspace_id: int | None = None
 
 
 @dataclass
@@ -91,6 +111,7 @@ class UploadedFile:
 
     id: int
     user_id: int
+    workspace_id: int
     original_filename: str
     mime_type: str
     file_size_bytes: int

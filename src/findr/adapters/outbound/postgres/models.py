@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -20,6 +20,23 @@ class UserModel(Base):
     created_at: Mapped[datetime]
 
 
+class WorkspaceModel(Base):
+    """One per client, inside one user's account — see specs/workspaces.md."""
+
+    __tablename__ = "workspaces"
+    # Names are unique per user ignoring case: "Client A" and "client a" clash.
+    # (text(), not func.lower("name"): that would index the string literal
+    # 'name' and allow only one workspace per user.)
+    __table_args__ = (
+        Index("ux_workspaces_user_name", "user_id", text("lower(name)"), unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str]
+    created_at: Mapped[datetime]
+
+
 class SessionModel(Base):
     __tablename__ = "sessions"
 
@@ -34,6 +51,11 @@ class OAuthStateModel(Base):
 
     state: Mapped[str] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # CASCADE: deleting a workspace drops its pending connects, so a
+    # callback arriving afterwards is simply an unknown state (400).
+    workspace_id: Mapped[int] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     code_verifier: Mapped[str]
     created_at: Mapped[datetime]
     expires_at: Mapped[datetime]
@@ -45,6 +67,7 @@ class SourceConnectionModel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), index=True)
     source_type: Mapped[str]
     external_account: Mapped[str | None]
     display_name: Mapped[str | None]
@@ -67,6 +90,9 @@ class DocumentModel(Base):
     connection_id: Mapped[int] = mapped_column(
         ForeignKey("source_connections.id"), index=True
     )
+    # Copied from the connection on write (specs/workspaces.md §3.2), for
+    # listing a workspace's documents without a join.
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), index=True)
     external_id: Mapped[str]
     subject: Mapped[str | None]
     sender: Mapped[str | None]
@@ -93,6 +119,7 @@ class UploadedFileModel(Base):
         ForeignKey("documents.id"), unique=True, index=True
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id"), index=True)
     original_filename: Mapped[str]
     mime_type: Mapped[str]
     file_size_bytes: Mapped[int]
@@ -123,5 +150,6 @@ class DocumentChunkModel(Base):
     # Real columns because future duplicate/version handling filters on them.
     document_version: Mapped[int]
     content_sha256: Mapped[str] = mapped_column(index=True)
+    workspace_id: Mapped[int] = mapped_column(index=True)
     # The remaining ChunkMetadata fields, read back whole.
     metadata_json: Mapped[dict] = mapped_column(JSONB)

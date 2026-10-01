@@ -54,6 +54,7 @@ def _to_document(row: DocumentModel) -> Document:
         body_text=row.body_text,
         sent_at=row.sent_at,
         thread_id=row.thread_id,
+        workspace_id=row.workspace_id,
     )
 
 
@@ -103,7 +104,10 @@ def main() -> None:
                 for doc in documents:
                     doc.chunks = chunks.get(doc.id, [])
                 search_index.index_documents(
-                    documents, SourceType(connection.source_type), connection.external_account
+                    documents,
+                    SourceType(connection.source_type),
+                    connection.external_account,
+                    connection.workspace_id,
                 )
                 total += len(documents)
                 offset += BATCH_SIZE

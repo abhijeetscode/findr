@@ -18,12 +18,15 @@ class OAuthStateRepositoryPostgres:
         self._db = db
         self._clock = clock or SystemClock()
 
-    def create(self, user_id: int, code_verifier: str, ttl_seconds: int) -> str:
+    def create(
+        self, user_id: int, workspace_id: int, code_verifier: str, ttl_seconds: int
+    ) -> str:
         state = secrets.token_urlsafe(32)
         now = self._clock.now()
         row = OAuthStateModel(
             state=state,
             user_id=user_id,
+            workspace_id=workspace_id,
             code_verifier=code_verifier,
             created_at=now,
             expires_at=now + timedelta(seconds=ttl_seconds),
@@ -41,6 +44,7 @@ class OAuthStateRepositoryPostgres:
         result = OAuthState(
             state=row.state,
             user_id=row.user_id,
+            workspace_id=row.workspace_id,
             code_verifier=row.code_verifier,
             expires_at=row.expires_at,
         )

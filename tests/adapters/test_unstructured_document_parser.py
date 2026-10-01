@@ -31,8 +31,10 @@ def parser() -> UnstructuredDocumentParser:
     return UnstructuredDocumentParser()
 
 
-def _parse(parser, content: bytes, mime_type: str, filename: str = "file", version: int = 1):
-    return parser.parse(content, mime_type, filename, version)
+def _parse(
+    parser, content: bytes, mime_type: str, filename: str = "file", version: int = 1, workspace_id: int = 1
+):
+    return parser.parse(content, mime_type, filename, version, workspace_id)
 
 
 def _docx(*, paragraphs=(), table_rows=None) -> bytes:
@@ -117,13 +119,14 @@ def test_every_chunk_carries_metadata(parser):
         paragraphs=[("h", "Intro"), ("p", "First section text. " * 40), ("h", "Details"),
                     ("p", "Second section text. " * 40)],
     )
-    parsed = _parse(parser, content, DOCX, "report.docx", version=3)
+    parsed = _parse(parser, content, DOCX, "report.docx", version=3, workspace_id=42)
 
     assert [c.metadata.chunk_index for c in parsed.chunks] == list(range(len(parsed.chunks)))
     sha = hashlib.sha256(content).hexdigest()
     for chunk in parsed.chunks:
         m = chunk.metadata
         assert m.document_version == 3
+        assert m.workspace_id == 42
         assert m.content_sha256 == sha
         assert m.filename == "report.docx"
         assert m.mime_type == DOCX

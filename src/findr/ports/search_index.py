@@ -8,10 +8,17 @@ class SearchIndex(Protocol):
     """Kept separate from DocumentRepository so a vector/semantic-search adapter
     can be added later without touching domain or application code."""
 
-    def search(self, user_id: int, query: str) -> list[SearchHit]: ...
+    def search(self, user_id: int, workspace_id: int, query: str) -> list[SearchHit]:
+        """Only ever returns documents from this one workspace (and user) —
+        see specs/workspaces.md §2."""
+        ...
 
     def index_documents(
-        self, documents: list[Document], source_type: SourceType, external_account: str | None
+        self,
+        documents: list[Document],
+        source_type: SourceType,
+        external_account: str | None,
+        workspace_id: int,
     ) -> None:
         """Mirrors DocumentRepository.upsert_many's shape — see
         specs/elasticsearch-search.md §2/§3.1. Called with upsert_many's
@@ -30,4 +37,8 @@ class SearchIndex(Protocol):
         """Mirrors DocumentRepository.delete_many's exact inputs — the
         caller never needs to know an index-internal id to delete
         something."""
+        ...
+
+    def delete_workspace(self, workspace_id: int) -> None:
+        """Removes every indexed document of a deleted workspace."""
         ...

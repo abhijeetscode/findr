@@ -5,7 +5,12 @@ from findr.domain.entities import ParsedDocument
 
 class DocumentParser(Protocol):
     def parse(
-        self, content: bytes, mime_type: str, filename: str, document_version: int
+        self,
+        content: bytes,
+        mime_type: str,
+        filename: str,
+        document_version: int,
+        workspace_id: int,
     ) -> ParsedDocument:
         """Partitions and chunks one file. Raises UnsupportedFileType /
         ExtractionFailed rather than returning empty text. Slow (OCR, layout

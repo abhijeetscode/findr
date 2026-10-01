@@ -161,6 +161,48 @@ a.result-card:hover {
 }
 .connect-menu-item:hover { background: #F6F4EE; }
 
+/* workspace switcher (sidebar) and first-run panel — specs/workspaces.md §7 */
+.workspace-switcher { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.workspace-switcher .ws-label {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #8E8B80; padding-left: 12px;
+}
+.ws-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.06); color: #F3F1E9; font-size: 14px; font-weight: 600;
+  font-family: inherit; cursor: pointer; text-align: left;
+}
+.ws-trigger:hover { background: rgba(255,255,255,0.10); }
+.ws-trigger .ws-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#ws-menu { min-width: 100%; box-sizing: border-box; }
+.connect-menu-item.ws-current { font-weight: 600; background: #F6F4EE; }
+.connect-menu-item.ws-danger { color: #B3261E !important; }
+.ws-menu-divider { height: 1px; background: #EFEBDE; margin: 4px 2px; }
+.workspace-eyebrow {
+  font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #8E8B80; margin-bottom: 4px;
+}
+.first-run {
+  max-width: 440px; background: #fff; border: 1px solid #ECE8DC; border-radius: 14px; padding: 28px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.first-run h2 { margin: 0; font-family: 'Fraunces', Georgia, serif; font-size: 22px; font-weight: 600; color: #1B1C20; }
+.first-run p { margin: 0; font-size: 14px; color: #6B675C; }
+.first-run form { display: flex; gap: 8px; }
+.first-run input {
+  flex-grow: 1; min-width: 0; height: 38px; padding: 0 12px; border: 1px solid #E1DDD1; border-radius: 10px;
+  font-size: 14px; font-family: inherit;
+}
+.first-run button {
+  height: 38px; padding: 0 16px; border-radius: 10px; border: none; background: #C1502E; color: #fff;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.first-run .auth-error { margin: 0; }
+.connect-error-banner {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px;
+  background: #FBEDE7; color: #8A2C14; font-size: 13px;
+}
+.connect-error-banner button { margin-left: auto; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 16px; }
+
 /* dynamic sidebar "connected sources" rows */
 .sidebar-source-row {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 10px;
@@ -314,6 +356,16 @@ a.result-card:hover {
       <div style="font-family:'Fraunces',Georgia,serif; font-size:19px; font-weight:600; letter-spacing:0.2px;">Findr</div>
     </div>
 
+    <!-- One workspace per client; everything below is scoped to it. -->
+    <div class="workspace-switcher hidden" id="workspace-switcher">
+      <div class="ws-label">Workspace</div>
+      <button type="button" class="ws-trigger" id="ws-trigger" aria-haspopup="true">
+        <span class="ws-name" id="ws-current-name"></span>
+        <span aria-hidden="true">▾</span>
+      </button>
+      <div class="connect-menu" id="ws-menu"></div>
+    </div>
+
     <nav class="sidebar-nav">
       <a href="#" aria-current="page" style="display:flex; align-items:center; gap:12px; padding:10px 12px; border-radius:10px; background:rgba(255,255,255,0.10); color:#F3F1E9; text-decoration:none; font-size:14px; font-weight:600;">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>
@@ -343,9 +395,34 @@ a.result-card:hover {
   <div class="main">
 
     <div style="display:flex; align-items:baseline; justify-content:space-between;">
+      <div>
+      <div class="workspace-eyebrow" id="workspace-eyebrow"></div>
       <h1 style="margin:0; font-family:'Fraunces',Georgia,serif; font-size:28px; font-weight:600; color:#1B1C20;">Search everything</h1>
+      </div>
       <button type="button" class="user-avatar-btn" id="user-avatar" title="Log out"></button>
     </div>
+
+    <!-- Shown after a Gmail connect is refused (e.g. the account is already
+         in another workspace) — specs/workspaces.md §5.2. -->
+    <div class="connect-error-banner hidden" id="connect-error" role="alert">
+      <span id="connect-error-text"></span>
+      <button type="button" id="connect-error-close" aria-label="Dismiss">×</button>
+    </div>
+
+    <!-- No workspaces yet: nothing else is usable until one exists. -->
+    <div class="first-run hidden" id="first-run">
+      <h2>Create your first workspace</h2>
+      <p>Use one workspace per client. Each keeps its own Gmail accounts and uploaded files, and search only ever looks inside the workspace you're in.</p>
+      <form id="first-run-form">
+        <input id="first-run-name" type="text" placeholder="e.g. Client A" maxlength="100" autocomplete="off">
+        <button type="submit">Create</button>
+      </form>
+      <div class="auth-error" id="first-run-error" hidden></div>
+    </div>
+
+    <!-- Everything scoped to the current workspace. display:contents keeps
+         the main column's spacing; .hidden hides it all at once. -->
+    <div id="workspace-content" style="display:contents;">
 
     <!-- SEARCH BAR -->
     <div class="search-bar">
@@ -364,7 +441,7 @@ a.result-card:hover {
         </button>
         <div class="connect-menu" id="row-connect-menu"></div>
       </div>
-      <!-- POST /sources/upload, one request per file — see specs/file-upload.md. -->
+      <!-- POST /workspaces/{id}/uploads, one request per file — see specs/upload-chunking.md. -->
       <input type="file" id="upload-input" multiple accept=".pdf,.docx,.txt,.md,.markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" class="hidden">
       <button type="button" class="upload-btn" id="upload-btn" style="display:flex; align-items:center; justify-content:center; gap:7px; height:36px; padding:0 16px; border-radius:999px; background:#C1502E; border:none; font-size:13px; font-weight:600; color:#fff; cursor:pointer; margin-left:auto;">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 19V6M6 11l6-6 6 6"></path><path d="M5 20h14"></path></svg>
@@ -439,6 +516,7 @@ a.result-card:hover {
       </div>
 
     </div>
+    </div><!-- /workspace-content -->
   </div>
 </div>
 
@@ -510,7 +588,199 @@ a.result-card:hover {
   var STATUS_LABEL = { active: "Synced", needs_reauth: "Needs reauth", error: "Error", disconnected: "Disconnected" };
 
   // ---------- state ----------
-  var state = { sources: [] };
+  var state = { sources: [], workspaces: [], workspaceId: null };
+
+  // ---------- workspaces (specs/workspaces.md §7) ----------
+  // The current workspace is remembered in this browser only as a
+  // convenience; every API call names it explicitly, so the server never
+  // relies on a "current workspace" of its own.
+  var WORKSPACE_KEY = "findr.workspaceId";
+
+  function rememberWorkspace(id) {
+    try { window.localStorage.setItem(WORKSPACE_KEY, String(id)); } catch (e) { /* storage unavailable */ }
+  }
+
+  function rememberedWorkspace() {
+    try { return Number(window.localStorage.getItem(WORKSPACE_KEY)) || null; } catch (e) { return null; }
+  }
+
+  // Path under the current workspace, e.g. ws("/search?q=x").
+  function ws(path) {
+    return "/workspaces/" + state.workspaceId + path;
+  }
+
+  // A response for a workspace we've since switched away from must never
+  // be rendered — it would show one client's data under another's name.
+  function stillCurrent(workspaceId) {
+    return workspaceId === state.workspaceId;
+  }
+
+  // A scoped call got 404: the workspace was deleted elsewhere (another tab).
+  function handleScopedResponse(res) {
+    if (res.status === 404) { loadWorkspaces(); return null; }
+    return res.ok ? res.json() : null;
+  }
+
+  function currentWorkspace() {
+    return state.workspaces.filter(function (w) { return w.id === state.workspaceId; })[0] || null;
+  }
+
+  function loadWorkspaces(preferredId) {
+    return api("/workspaces").then(function (res) {
+      return res.ok ? res.json() : [];
+    }).then(function (workspaces) {
+      state.workspaces = workspaces || [];
+      if (state.workspaces.length === 0) { showFirstRun(); return; }
+      var ids = state.workspaces.map(function (w) { return w.id; });
+      var pick = [preferredId, state.workspaceId, rememberedWorkspace()].filter(function (id) {
+        return id && ids.indexOf(id) !== -1;
+      })[0] || ids[0];
+      selectWorkspace(pick, pick !== state.workspaceId);
+    });
+  }
+
+  function showFirstRun() {
+    state.workspaceId = null;
+    state.sources = [];
+    $("workspace-switcher").classList.add("hidden");
+    $("workspace-content").classList.add("hidden");
+    $("first-run").classList.remove("hidden");
+    $("workspace-eyebrow").textContent = "";
+    $("first-run-name").focus();
+  }
+
+  function selectWorkspace(id, switched) {
+    state.workspaceId = id;
+    rememberWorkspace(id);
+    $("first-run").classList.add("hidden");
+    $("workspace-content").classList.remove("hidden");
+    $("workspace-switcher").classList.remove("hidden");
+    renderWorkspaceSwitcher();
+    if (switched) {
+      // Nothing from the previous client stays on screen.
+      $("q").value = "";
+      renderResults(null);
+      state.sources = [];
+      renderSidebarSources();
+      renderSourceRowPills();
+      inProgressUploadIds = {};
+      $("uploads-status").innerHTML = "";
+    }
+    loadSources();
+    loadUploads();
+  }
+
+  function renderWorkspaceSwitcher() {
+    var current = currentWorkspace();
+    var name = current ? current.name : "";
+    $("ws-current-name").textContent = name;
+    $("ws-trigger").title = name;
+    $("workspace-eyebrow").textContent = name ? "Workspace · " + name : "";
+    var items = state.workspaces.map(function (w) {
+      return '<a class="connect-menu-item' + (w.id === state.workspaceId ? ' ws-current' : '') +
+        '" data-ws-id="' + w.id + '">' + escapeHtml(w.name) + '</a>';
+    }).join("");
+    $("ws-menu").innerHTML = items +
+      '<div class="ws-menu-divider"></div>' +
+      '<a class="connect-menu-item" data-ws-action="new">+ New workspace</a>' +
+      '<a class="connect-menu-item" data-ws-action="rename">Rename "' + escapeHtml(name) + '"</a>' +
+      '<a class="connect-menu-item ws-danger" data-ws-action="delete">Delete "' + escapeHtml(name) + '"</a>';
+  }
+
+  $("ws-menu").addEventListener("click", function (e) {
+    var item = e.target.closest("[data-ws-id], [data-ws-action]");
+    if (!item) return;
+    $("ws-menu").classList.remove("open");
+    if (item.hasAttribute("data-ws-id")) {
+      var id = Number(item.getAttribute("data-ws-id"));
+      if (id !== state.workspaceId) selectWorkspace(id, true);
+      return;
+    }
+    var action = item.getAttribute("data-ws-action");
+    if (action === "new") newWorkspace();
+    else if (action === "rename") renameWorkspace();
+    else if (action === "delete") deleteWorkspace();
+  });
+
+  function workspaceError(res) {
+    return res.json().catch(function () { return {}; }).then(function (body) {
+      return typeof body.detail === "string" ? body.detail : "Request failed (" + res.status + ")";
+    });
+  }
+
+  function createWorkspace(name) {
+    return api("/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name })
+    }).then(function (res) {
+      if (res.ok) return res.json().then(function (w) { return loadWorkspaces(w.id).then(function () { return null; }); });
+      return workspaceError(res);
+    });
+  }
+
+  function newWorkspace() {
+    var name = window.prompt("Name of the new workspace (e.g. the client's name):");
+    if (name === null || !name.trim()) return;
+    createWorkspace(name.trim()).then(function (error) { if (error) window.alert(error); });
+  }
+
+  function renameWorkspace() {
+    var current = currentWorkspace();
+    if (!current) return;
+    var name = window.prompt("Rename workspace:", current.name);
+    if (name === null || !name.trim() || name.trim() === current.name) return;
+    api("/workspaces/" + current.id, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() })
+    }).then(function (res) {
+      if (res.ok) return loadWorkspaces(current.id);
+      return workspaceError(res).then(function (error) { window.alert(error); });
+    });
+  }
+
+  function deleteWorkspace() {
+    var current = currentWorkspace();
+    if (!current) return;
+    var ok = window.confirm(
+      'Delete workspace "' + current.name + '" and everything in it?\n\n' +
+      "Its Gmail connections (access is revoked), uploaded files and their search data are removed. This can't be undone."
+    );
+    if (!ok) return;
+    api("/workspaces/" + current.id, { method: "DELETE" }).then(function (res) {
+      if (!res.ok && res.status !== 404) window.alert("Delete failed (" + res.status + ").");
+      state.workspaceId = null;
+      loadWorkspaces();
+    });
+  }
+
+  $("first-run-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var name = $("first-run-name").value.trim();
+    var errorEl = $("first-run-error");
+    errorEl.hidden = true;
+    if (!name) return;
+    createWorkspace(name).then(function (error) {
+      if (error) { errorEl.textContent = error; errorEl.hidden = false; }
+      else $("first-run-name").value = "";
+    });
+  });
+
+  // After a refused Gmail connect, the callback redirects to /?connect_error=…
+  function showConnectError() {
+    var params = new URLSearchParams(window.location.search);
+    var message = params.get("connect_error");
+    if (!message) return;
+    $("connect-error-text").textContent = message;
+    $("connect-error").classList.remove("hidden");
+    params.delete("connect_error");
+    var query = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (query ? "?" + query : ""));
+  }
+  $("connect-error-close").addEventListener("click", function () {
+    $("connect-error").classList.add("hidden");
+  });
 
   // ---------- auth ----------
   function checkAuth() {
@@ -534,9 +804,9 @@ a.result-card:hover {
     var avatar = $("user-avatar");
     avatar.textContent = initials(user.email);
     avatar.title = user.email + " — click to log out";
-    loadSources();
-    loadUploads();
     renderResults(null);
+    showConnectError();
+    loadWorkspaces();
   }
 
   function showAuthError(id, message) {
@@ -576,10 +846,10 @@ a.result-card:hover {
 
   // ---------- connected sources (sidebar + source row + connect menus) ----------
   function loadSources() {
-    api("/sources").then(function (res) {
-      if (!res.ok) return;
-      return res.json();
-    }).then(function (sources) {
+    var workspaceId = state.workspaceId;
+    if (!workspaceId) return;
+    api(ws("/sources")).then(handleScopedResponse).then(function (sources) {
+      if (!stillCurrent(workspaceId)) return;
       state.sources = sources || [];
       renderSidebarSources();
       renderSourceRowPills();
@@ -670,7 +940,8 @@ a.result-card:hover {
 
     var menuHtml = missing.map(function (t) {
       var meta = sourceMeta(t);
-      return '<a class="connect-menu-item" href="/sources/' + t + '/connect">' + meta.icon(meta.color) + '<span>' + meta.label + '</span></a>';
+      // Connects into the current workspace (specs/workspaces.md §5.1).
+      return '<a class="connect-menu-item" href="' + ws("/sources/" + t + "/connect") + '">' + meta.icon(meta.color) + '<span>' + meta.label + '</span></a>';
     }).join("");
 
     [["sidebar-connect-trigger", "sidebar-connect-menu"], ["row-connect-trigger", "row-connect-menu"]].forEach(function (pair) {
@@ -692,6 +963,7 @@ a.result-card:hover {
     });
   }
   setupDropdown("sidebar-connect-trigger", "sidebar-connect-menu");
+  setupDropdown("ws-trigger", "ws-menu");
   setupDropdown("row-connect-trigger", "row-connect-menu");
   document.addEventListener("click", function () {
     document.querySelectorAll(".connect-menu.open").forEach(function (m) { m.classList.remove("open"); });
@@ -789,7 +1061,7 @@ a.result-card:hover {
         button.lastChild.textContent = " Uploading " + (i + 1) + "/" + files.length + "…";
         var form = new FormData();
         form.append("file", file);
-        return api("/sources/upload", { method: "POST", body: form }).then(function (res) {
+        return api(ws("/uploads"), { method: "POST", body: form }).then(function (res) {
           if (res.ok) return;
           return res.json().catch(function () { return {}; }).then(function (body) {
             failures.push(file.name + ": " + (body.detail || res.status));
@@ -815,10 +1087,10 @@ a.result-card:hover {
 
   function loadUploads() {
     window.clearTimeout(uploadPollTimer);
-    api("/uploads").then(function (res) {
-      return res.ok ? res.json() : null;
-    }).then(function (uploads) {
-      if (!uploads) return;
+    var workspaceId = state.workspaceId;
+    if (!workspaceId) return;
+    api(ws("/uploads")).then(handleScopedResponse).then(function (uploads) {
+      if (!uploads || !stillCurrent(workspaceId)) return;
       var stillRunning = {};
       var becameReady = false;
       uploads.forEach(function (u) {
@@ -857,11 +1129,10 @@ a.result-card:hover {
   }
 
   function runSearch(query) {
-    api("/search?q=" + encodeURIComponent(query)).then(function (res) {
-      if (!res.ok) return null;
-      return res.json();
-    }).then(function (body) {
-      if (body) renderResults(body.results);
+    var workspaceId = state.workspaceId;
+    if (!workspaceId) return;
+    api(ws("/search?q=" + encodeURIComponent(query))).then(handleScopedResponse).then(function (body) {
+      if (body && stillCurrent(workspaceId)) renderResults(body.results);
     });
   }
 

@@ -1,19 +1,21 @@
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
 
 from findr.application.sources.connect_gmail import BeginGmailConnect, CompleteGmailConnect
-from findr.domain.entities import Credentials, SourceConnection
-from findr.domain.exceptions import InvalidOAuthState
-from findr.domain.value_objects import ConnectionStatus
+from findr.domain.entities import Credentials, SourceConnection, Workspace
+from findr.domain.exceptions import InvalidOAuthState, SourceInOtherWorkspace
+from findr.domain.value_objects import ConnectionStatus, SourceType
 from findr.ports.oauth_state_repository import OAuthState
 
 
 class FakeOAuthProvider:
     """Stand-in for ports.oauth_provider.OAuthProvider — no real network."""
 
-    def __init__(self) -> None:
+    def __init__(self, email: str = "someone@gmail.com") -> None:
         self.built_urls: list[tuple[str, str]] = []
+        self._email = email
 
     def build_authorize_url(self, state: str, code_challenge: str) -> str:
         self.built_urls.append((state, code_challenge))
@@ -29,14 +31,14 @@ class FakeOAuthProvider:
     def refresh(self, refresh_token: str) -> Credentials:
         raise NotImplementedError
 
-    def revoke(self, token: str) -> None:
+    def revoke(self, token) -> None:
         pass
 
     def get_account_email(self, access_token: str) -> str:
-        return "someone@gmail.com"
+        return self._email
 
     def get_display_name(self, access_token: str) -> str:
-        return "someone@gmail.com"
+        return self._email
 
 
 class FakeOAuthStateRepository:
@@ -44,12 +46,13 @@ class FakeOAuthStateRepository:
         self._states: dict[str, OAuthState] = {}
         self._counter = 0
 
-    def create(self, user_id: int, code_verifier: str, ttl_seconds: int) -> str:
+    def create(self, user_id: int, workspace_id: int, code_verifier: str, ttl_seconds: int) -> str:
         self._counter += 1
         state = f"state-{self._counter}"
         self._states[state] = OAuthState(
             state=state,
             user_id=user_id,
+            workspace_id=workspace_id,
             code_verifier=code_verifier,
             expires_at=datetime(2030, 1, 1),
         )
@@ -61,13 +64,14 @@ class FakeOAuthStateRepository:
 
 class FakeSourceConnectionRepository:
     def __init__(self) -> None:
-        self._connections: dict[int, SourceConnection] = {}
+        self.connections: dict[int, SourceConnection] = {}
         self._next_id = 1
 
-    def create(self, user_id, source_type, external_account, display_name=None) -> SourceConnection:
+    def create(self, user_id, workspace_id, source_type, external_account, display_name=None):
         connection = SourceConnection(
             id=self._next_id,
             user_id=user_id,
+            workspace_id=workspace_id,
             source_type=source_type,
             external_account=external_account,
             status=ConnectionStatus.ACTIVE,
@@ -77,73 +81,29 @@ class FakeSourceConnectionRepository:
             created_at=datetime(2024, 1, 1),
             display_name=display_name,
         )
-        self._connections[connection.id] = connection
+        self.connections[connection.id] = connection
         self._next_id += 1
         return connection
 
-    def get(self, connection_id, user_id) -> SourceConnection | None:
-        c = self._connections.get(connection_id)
-        return c if c is not None and c.user_id == user_id else None
-
-    def get_by_account(self, user_id, source_type, external_account) -> SourceConnection | None:
-        for c in self._connections.values():
-            if (
-                c.user_id == user_id
-                and c.source_type == source_type
-                and c.external_account == external_account
-            ):
-                return c
-        return None
-
-    def list_for_user(self, user_id) -> list[SourceConnection]:
-        return [c for c in self._connections.values() if c.user_id == user_id]
-
-    def list_active(self) -> list[SourceConnection]:
-        return [c for c in self._connections.values() if c.status == ConnectionStatus.ACTIVE]
-
-    def update_status(self, connection_id, status, last_error=None) -> None:
-        c = self._connections[connection_id]
-        self._connections[connection_id] = SourceConnection(
-            id=c.id,
-            user_id=c.user_id,
-            source_type=c.source_type,
-            external_account=c.external_account,
-            status=status,
-            sync_cursor=c.sync_cursor,
-            last_synced_at=c.last_synced_at,
-            last_error=last_error,
-            created_at=c.created_at,
-            display_name=c.display_name,
+    def get_by_account(self, user_id, source_type, external_account):
+        return next(
+            (
+                c
+                for c in self.connections.values()
+                if (c.user_id, c.source_type, c.external_account)
+                == (user_id, source_type, external_account)
+            ),
+            None,
         )
 
-    def update_cursor(self, connection_id, cursor, synced_at) -> None:
-        c = self._connections[connection_id]
-        self._connections[connection_id] = SourceConnection(
-            id=c.id,
-            user_id=c.user_id,
-            source_type=c.source_type,
-            external_account=c.external_account,
-            status=c.status,
-            sync_cursor=cursor,
-            last_synced_at=synced_at,
-            last_error=c.last_error,
-            created_at=c.created_at,
-            display_name=c.display_name,
+    def update_status(self, connection_id, status, last_error=None) -> None:
+        self.connections[connection_id] = replace(
+            self.connections[connection_id], status=status, last_error=last_error
         )
 
     def update_display_name(self, connection_id, display_name) -> None:
-        c = self._connections[connection_id]
-        self._connections[connection_id] = SourceConnection(
-            id=c.id,
-            user_id=c.user_id,
-            source_type=c.source_type,
-            external_account=c.external_account,
-            status=c.status,
-            sync_cursor=c.sync_cursor,
-            last_synced_at=c.last_synced_at,
-            last_error=c.last_error,
-            created_at=c.created_at,
-            display_name=display_name,
+        self.connections[connection_id] = replace(
+            self.connections[connection_id], display_name=display_name
         )
 
 
@@ -161,61 +121,89 @@ class FakeCredentialStore:
         self._creds.pop(connection_id, None)
 
 
-def test_begin_gmail_connect_returns_authorize_url():
-    oauth_provider = FakeOAuthProvider()
-    use_case = BeginGmailConnect(oauth_provider, FakeOAuthStateRepository())
+class FakeWorkspaceRepository:
+    def __init__(self, *workspaces: Workspace) -> None:
+        self._workspaces = {w.id: w for w in workspaces}
 
-    url = use_case.execute(user_id=1)
+    def get(self, workspace_id, user_id):
+        w = self._workspaces.get(workspace_id)
+        return w if w is not None and w.user_id == user_id else None
+
+
+def _workspace(id_, name, user_id=7):
+    return Workspace(id=id_, user_id=user_id, name=name, created_at=datetime(2026, 1, 1))
+
+
+class Env:
+    def __init__(self) -> None:
+        self.oauth_provider = FakeOAuthProvider()
+        self.oauth_states = FakeOAuthStateRepository()
+        self.connections = FakeSourceConnectionRepository()
+        self.credentials = FakeCredentialStore()
+        self.workspaces = FakeWorkspaceRepository(_workspace(1, "Client A"), _workspace(2, "Client B"))
+
+    def connect(self, user_id=7, workspace_id=1) -> SourceConnection:
+        url = BeginGmailConnect(self.oauth_provider, self.oauth_states).execute(user_id, workspace_id)
+        state = url.rsplit("state=", 1)[1]
+        return CompleteGmailConnect(
+            self.oauth_provider, self.oauth_states, self.connections, self.credentials, self.workspaces
+        ).execute(code="valid-code", state=state)
+
+
+def test_begin_gmail_connect_returns_authorize_url_and_remembers_the_workspace():
+    env = Env()
+    url = BeginGmailConnect(env.oauth_provider, env.oauth_states).execute(7, 2)
 
     assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?state=")
-    assert len(oauth_provider.built_urls) == 1
+    state = env.oauth_states.consume(url.rsplit("state=", 1)[1])
+    assert (state.user_id, state.workspace_id) == (7, 2)
 
 
-def test_complete_gmail_connect_creates_connection_and_saves_credentials():
-    oauth_provider = FakeOAuthProvider()
-    oauth_states = FakeOAuthStateRepository()
-    connection_repo = FakeSourceConnectionRepository()
-    credential_store = FakeCredentialStore()
+def test_complete_gmail_connect_creates_connection_in_the_states_workspace():
+    env = Env()
 
-    authorize_url = BeginGmailConnect(oauth_provider, oauth_states).execute(user_id=42)
-    state = authorize_url.rsplit("state=", 1)[1]
+    connection = env.connect(user_id=7, workspace_id=2)
 
-    complete = CompleteGmailConnect(oauth_provider, oauth_states, connection_repo, credential_store)
-    connection = complete.execute(code="valid-code", state=state)
-
-    assert connection.user_id == 42
+    assert connection.user_id == 7
+    assert connection.workspace_id == 2
+    assert connection.source_type == SourceType.GMAIL
     assert connection.external_account == "someone@gmail.com"
     assert connection.status == ConnectionStatus.ACTIVE
-    assert credential_store.get(connection.id).access_token == "access-for-valid-code"
+    assert env.credentials.get(connection.id).access_token == "access-for-valid-code"
 
 
 def test_complete_gmail_connect_rejects_unknown_state():
+    env = Env()
     use_case = CompleteGmailConnect(
-        FakeOAuthProvider(),
-        FakeOAuthStateRepository(),
-        FakeSourceConnectionRepository(),
-        FakeCredentialStore(),
+        env.oauth_provider, env.oauth_states, env.connections, env.credentials, env.workspaces
     )
 
     with pytest.raises(InvalidOAuthState):
         use_case.execute(code="valid-code", state="never-issued")
 
 
-def test_complete_gmail_connect_reuses_existing_connection_on_reconnect():
-    oauth_provider = FakeOAuthProvider()
-    oauth_states = FakeOAuthStateRepository()
-    connection_repo = FakeSourceConnectionRepository()
-    credential_store = FakeCredentialStore()
+def test_reconnect_in_the_same_workspace_reuses_the_connection():
+    env = Env()
+    first = env.connect(workspace_id=1)
+    env.connections.update_status(first.id, ConnectionStatus.NEEDS_REAUTH)
 
-    def do_connect():
-        state = oauth_states.create(user_id=7, code_verifier="verifier", ttl_seconds=600)
-        complete = CompleteGmailConnect(
-            oauth_provider, oauth_states, connection_repo, credential_store
-        )
-        return complete.execute(code="valid-code", state=state)
+    second = env.connect(workspace_id=1)
 
-    first = do_connect()
-    second = do_connect()
+    assert second.id == first.id
+    assert len(env.connections.connections) == 1
+    assert env.connections.connections[first.id].status == ConnectionStatus.ACTIVE
 
-    assert first.id == second.id
-    assert len(connection_repo.list_for_user(7)) == 1
+
+@pytest.mark.parametrize("status", [ConnectionStatus.ACTIVE, ConnectionStatus.DISCONNECTED])
+def test_account_already_in_another_workspace_is_refused(status):
+    # One Gmail account, one workspace — even a disconnected connection still
+    # has its documents there (specs/workspaces.md §5.2).
+    env = Env()
+    first = env.connect(workspace_id=1)
+    env.connections.update_status(first.id, status)
+
+    with pytest.raises(SourceInOtherWorkspace, match="'Client A'"):
+        env.connect(workspace_id=2)
+
+    assert len(env.connections.connections) == 1
+    assert env.connections.connections[first.id].workspace_id == 1

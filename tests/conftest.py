@@ -200,6 +200,7 @@ def make_chunk(text: str, index: int = 0, **metadata_overrides):
         chunk_index=index,
         document_version=1,
         content_sha256="0" * 64,
+        workspace_id=1,
         filename="notes.txt",
         mime_type="text/plain",
         page_start=None,
@@ -221,3 +222,28 @@ def make_chunk(text: str, index: int = 0, **metadata_overrides):
 @pytest.fixture
 def chunk_factory():
     return make_chunk
+
+
+def make_workspace(db, user_id: int, name: str = "Client A"):
+    """A real workspace row (connections, uploads and documents all need one)."""
+    from findr.adapters.outbound.postgres.workspace_repository_postgres import (
+        WorkspaceRepositoryPostgres,
+    )
+
+    return WorkspaceRepositoryPostgres(db).create(user_id, name)
+
+
+@pytest.fixture
+def workspace_factory():
+    return make_workspace
+
+
+def ensure_workspace(db, user_id: int, name: str = "Client A"):
+    """The user's workspace with this name, created on first use — for tests
+    that just need *a* workspace to hang connections/uploads on."""
+    from findr.adapters.outbound.postgres.workspace_repository_postgres import (
+        WorkspaceRepositoryPostgres,
+    )
+
+    repo = WorkspaceRepositoryPostgres(db)
+    return repo.get_by_name(user_id, name) or repo.create(user_id, name)

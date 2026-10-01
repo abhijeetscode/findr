@@ -55,7 +55,12 @@ class UnstructuredDocumentParser:
         spacy.load("en_core_web_sm")
 
     def parse(
-        self, content: bytes, mime_type: str, filename: str, document_version: int
+        self,
+        content: bytes,
+        mime_type: str,
+        filename: str,
+        document_version: int,
+        workspace_id: int,
     ) -> ParsedDocument:
         elements = self._partition(content, mime_type)
 
@@ -88,6 +93,7 @@ class UnstructuredDocumentParser:
                     sections=sections,
                     document_version=document_version,
                     content_sha256=content_sha256,
+                    workspace_id=workspace_id,
                     filename=filename,
                     mime_type=mime_type,
                 )
@@ -141,6 +147,7 @@ class UnstructuredDocumentParser:
         sections: dict[str, str | None],
         document_version: int,
         content_sha256: str,
+        workspace_id: int,
         filename: str,
         mime_type: str,
     ) -> DocumentChunk:
@@ -159,6 +166,7 @@ class UnstructuredDocumentParser:
                 chunk_index=chunk_index,
                 document_version=document_version,
                 content_sha256=content_sha256,
+                workspace_id=workspace_id,
                 filename=filename,
                 mime_type=mime_type,
                 page_start=pages[0] if pages else None,

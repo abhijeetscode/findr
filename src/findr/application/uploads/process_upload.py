@@ -74,7 +74,11 @@ class ProcessUpload:
         try:
             content = self._storage.read(upload.storage_path)
             parsed = self._parser.parse(
-                content, upload.mime_type, upload.original_filename, upload.document_version
+                content,
+                upload.mime_type,
+                upload.original_filename,
+                upload.document_version,
+                upload.workspace_id,
             )
         except (ExtractionFailed, UnsupportedFileType) as exc:
             self._uploads.mark_failed(upload_id, str(exc))
@@ -94,10 +98,17 @@ class ProcessUpload:
                 self._uow.rollback()
                 return Outcome.SKIPPED
 
-            connection = self._connections.get_by_account(upload.user_id, SourceType.FILE, None)
+            # Each workspace has its own "Uploaded files" connection.
+            connection = self._connections.get_in_workspace(
+                upload.workspace_id, SourceType.FILE, None
+            )
             if connection is None:
                 connection = self._connections.create(
-                    upload.user_id, SourceType.FILE, None, display_name=UPLOADS_DISPLAY_NAME
+                    upload.user_id,
+                    upload.workspace_id,
+                    SourceType.FILE,
+                    None,
+                    display_name=UPLOADS_DISPLAY_NAME,
                 )
             [document] = self._documents.upsert_many(
                 [
@@ -117,7 +128,9 @@ class ProcessUpload:
                     )
                 ]
             )
-            self._search_index.index_documents([document], SourceType.FILE, None)
+            self._search_index.index_documents(
+                [document], SourceType.FILE, None, upload.workspace_id
+            )
             self._uploads.mark_ready(upload_id, document.id)
             self._uow.commit()
             return Outcome.READY

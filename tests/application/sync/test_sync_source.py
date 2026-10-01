@@ -108,14 +108,14 @@ class FakeDocumentRepository:
 
 class FakeSearchIndex:
     def __init__(self) -> None:
-        self.indexed: list[tuple[list[Document], SourceType, str | None]] = []
+        self.indexed: list[tuple[list[Document], SourceType, str | None, int]] = []
         self.deleted: list[tuple[int, list[str]]] = []
 
     def search(self, user_id, query):
         raise NotImplementedError
 
-    def index_documents(self, documents, source_type, external_account) -> None:
-        self.indexed.append((documents, source_type, external_account))
+    def index_documents(self, documents, source_type, external_account, workspace_id) -> None:
+        self.indexed.append((documents, source_type, external_account, workspace_id))
 
     def delete_documents(self, connection_id, external_ids) -> None:
         self.deleted.append((connection_id, external_ids))
@@ -138,6 +138,7 @@ def _connection(**overrides) -> SourceConnection:
     base = dict(
         id=1,
         user_id=10,
+        workspace_id=3,
         source_type=SourceType.GMAIL,
         external_account="a@gmail.com",
         status=ConnectionStatus.ACTIVE,
@@ -184,7 +185,8 @@ def test_sync_source_upserts_and_deletes_then_marks_active():
 
     assert document_repo.upserted == [doc]
     assert document_repo.deleted == [(1, ["msg-old"])]
-    assert search_index.indexed == [([doc], SourceType.GMAIL, "a@gmail.com")]
+    # Indexed under the connection's workspace (specs/workspaces.md §5.4).
+    assert search_index.indexed == [([doc], SourceType.GMAIL, "a@gmail.com", 3)]
     assert search_index.deleted == [(1, ["msg-old"])]
     assert connection_repo.cursor_updates == [(1, "new-cursor", clock.current)]
     assert connection_repo.status_updates == [(1, ConnectionStatus.ACTIVE, None)]

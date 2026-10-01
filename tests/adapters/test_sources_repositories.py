@@ -13,6 +13,7 @@ from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
 )
 from findr.adapters.outbound.postgres.user_repository_postgres import UserRepositoryPostgres
 from findr.domain.value_objects import ConnectionStatus, SourceType
+from conftest import ensure_workspace
 
 
 class FixedClock:
@@ -29,7 +30,7 @@ def test_oauth_state_round_trip_is_one_time_use(db_session):
     clock = FixedClock(datetime(2024, 1, 1))
     repo = OAuthStateRepositoryPostgres(db_session, clock=clock)
 
-    state = repo.create(user_id=user.id, code_verifier="verifier-xyz", ttl_seconds=600)
+    state = repo.create(user_id=user.id, workspace_id=ensure_workspace(db_session, user.id).id, code_verifier="verifier-xyz", ttl_seconds=600)
     db_session.commit()
 
     result = repo.consume(state)
@@ -46,7 +47,7 @@ def test_oauth_state_expired_returns_none(db_session):
     db_session.commit()
     clock = FixedClock(datetime(2024, 1, 1))
     repo = OAuthStateRepositoryPostgres(db_session, clock=clock)
-    state = repo.create(user_id=user.id, code_verifier="v", ttl_seconds=60)
+    state = repo.create(user_id=user.id, workspace_id=ensure_workspace(db_session, user.id).id, code_verifier="v", ttl_seconds=60)
     db_session.commit()
 
     clock.current = datetime(2024, 1, 1, 0, 5)  # 5 minutes later, past the 60s ttl
@@ -58,7 +59,7 @@ def test_source_connection_create_get_and_status_lifecycle(db_session):
     db_session.commit()
     repo = SourceConnectionRepositoryPostgres(db_session)
 
-    connection = repo.create(user.id, SourceType.GMAIL, "a@gmail.com")
+    connection = repo.create(user.id, ensure_workspace(db_session, user.id).id, SourceType.GMAIL, "a@gmail.com")
     db_session.commit()
 
     assert repo.get(connection.id, user.id).external_account == "a@gmail.com"
@@ -84,7 +85,7 @@ def test_source_connection_display_name_round_trip(db_session):
     db_session.commit()
     repo = SourceConnectionRepositoryPostgres(db_session)
 
-    connection = repo.create(user.id, SourceType.GMAIL, "ada@acme.com", "Acme Corp (Ada)")
+    connection = repo.create(user.id, ensure_workspace(db_session, user.id).id, SourceType.GMAIL, "ada@acme.com", "Acme Corp (Ada)")
     db_session.commit()
     assert repo.get(connection.id, user.id).display_name == "Acme Corp (Ada)"
 
@@ -103,7 +104,7 @@ def test_credential_store_encrypts_tokens_at_rest(db_session):
     user = UserRepositoryPostgres(db_session).create("a@example.com", "hash")
     db_session.commit()
     connection = SourceConnectionRepositoryPostgres(db_session).create(
-        user.id, SourceType.GMAIL, "a@gmail.com"
+        user.id, ensure_workspace(db_session, user.id).id, SourceType.GMAIL, "a@gmail.com"
     )
     db_session.commit()
 

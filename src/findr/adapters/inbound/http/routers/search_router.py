@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from findr.adapters.inbound.http.deps import get_current_user, get_search_index
+from findr.adapters.inbound.http.deps import get_search_index, get_workspace
 from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
 from findr.application.search.search_documents import SearchDocuments
-from findr.domain.entities import SearchHit, User
+from findr.domain.entities import SearchHit, Workspace
 from findr.domain.value_objects import SourceType
 
-router = APIRouter(prefix="/search", tags=["search"])
+# Search only ever covers one workspace (specs/workspaces.md §2).
+router = APIRouter(prefix="/workspaces/{workspace_id}/search", tags=["search"])
 
 
 def _source_url(hit: SearchHit) -> str | None:
@@ -40,11 +41,11 @@ class SearchResponse(BaseModel):
 @router.get("", response_model=SearchResponse)
 def search(
     q: str = Query(..., min_length=1),
-    user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_workspace),
     search_index: ElasticsearchIndex = Depends(get_search_index),
 ) -> SearchResponse:
     use_case = SearchDocuments(search_index)
-    hits = use_case.execute(user.id, q)
+    hits = use_case.execute(workspace.user_id, workspace.id, q)
     return SearchResponse(
         results=[
             SearchHitResponse(

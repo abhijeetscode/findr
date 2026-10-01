@@ -7,12 +7,17 @@ from typing import Protocol
 class OAuthState:
     state: str
     user_id: int
+    # The workspace the connect was started from — the callback creates the
+    # connection there (specs/workspaces.md §5.1).
+    workspace_id: int
     code_verifier: str
     expires_at: datetime
 
 
 class OAuthStateRepository(Protocol):
-    def create(self, user_id: int, code_verifier: str, ttl_seconds: int) -> str:
+    def create(
+        self, user_id: int, workspace_id: int, code_verifier: str, ttl_seconds: int
+    ) -> str:
         """Persists a pending OAuth request and returns its state token."""
         ...
 

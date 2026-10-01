@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session as DbSession
 
 from findr.adapters.outbound.postgres.models import SourceConnectionModel
@@ -22,12 +22,14 @@ class SourceConnectionRepositoryPostgres:
     def create(
         self,
         user_id: int,
+        workspace_id: int,
         source_type: SourceType,
         external_account: str | None,
         display_name: str | None = None,
     ) -> SourceConnection:
         row = SourceConnectionModel(
             user_id=user_id,
+            workspace_id=workspace_id,
             source_type=source_type.value,
             external_account=external_account,
             display_name=display_name,
@@ -53,6 +55,30 @@ class SourceConnectionRepositoryPostgres:
     def get_by_account(
         self, user_id: int, source_type: SourceType, external_account: str | None
     ) -> SourceConnection | None:
+        return self._first(
+            SourceConnectionModel.user_id == user_id, source_type, external_account
+        )
+
+    def get_in_workspace(
+        self, workspace_id: int, source_type: SourceType, external_account: str | None
+    ) -> SourceConnection | None:
+        return self._first(
+            SourceConnectionModel.workspace_id == workspace_id, source_type, external_account
+        )
+
+    def list_for_workspace(self, workspace_id: int) -> list[SourceConnection]:
+        rows = (
+            self._db.execute(
+                select(SourceConnectionModel)
+                .where(SourceConnectionModel.workspace_id == workspace_id)
+                .order_by(SourceConnectionModel.id)
+            )
+            .scalars()
+            .all()
+        )
+        return [_to_domain(r) for r in rows]
+
+    def _first(self, scope_clause, source_type: SourceType, external_account: str | None):
         # IS NULL, not "= NULL", for the FILE connection's absent account.
         # Postgres treats NULLs as distinct in the (user_id, source_type,
         # external_account) unique constraint, so two concurrent first
@@ -67,7 +93,7 @@ class SourceConnectionRepositoryPostgres:
             self._db.execute(
                 select(SourceConnectionModel)
                 .where(
-                    SourceConnectionModel.user_id == user_id,
+                    scope_clause,
                     SourceConnectionModel.source_type == source_type.value,
                     account_clause,
                 )
@@ -78,15 +104,11 @@ class SourceConnectionRepositoryPostgres:
         )
         return _to_domain(row) if row is not None else None
 
-    def list_for_user(self, user_id: int) -> list[SourceConnection]:
-        rows = (
-            self._db.execute(
-                select(SourceConnectionModel).where(SourceConnectionModel.user_id == user_id)
-            )
-            .scalars()
-            .all()
+    def delete(self, connection_id: int) -> None:
+        self._db.execute(
+            delete(SourceConnectionModel).where(SourceConnectionModel.id == connection_id)
         )
-        return [_to_domain(r) for r in rows]
+        self._db.flush()
 
     def list_active(self) -> list[SourceConnection]:
         rows = (
@@ -130,6 +152,7 @@ def _to_domain(row: SourceConnectionModel) -> SourceConnection:
     return SourceConnection(
         id=row.id,
         user_id=row.user_id,
+        workspace_id=row.workspace_id,
         source_type=SourceType(row.source_type),
         external_account=row.external_account,
         display_name=row.display_name,

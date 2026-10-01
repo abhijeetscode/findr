@@ -291,6 +291,7 @@ Every chunk carries a `ChunkMetadata` (§4.1), built by the parser. Most fields 
 | `element_types` | Distinct `category` values of the chunk's `orig_elements`, in order. |
 | `languages` | `unstructured`'s detected languages for the chunk. |
 | `is_continuation` | `unstructured`'s flag for the second and later pieces of an element split at `max_characters`. |
+| `workspace_id` | Added by `specs/workspaces.md` §3.1: the upload's workspace, passed to the parser. Self-describing, like the version and hash; isolation itself is enforced on the parent document. |
 | `parser_version` | `"unstructured-<installed version>/chunking-v1"`. The `unstructured` version is read at runtime (`importlib.metadata`). `chunking-v1` is a constant in the parser, bumped whenever the partition or chunking parameters change. |
 
 **Why version and hash now, before duplicates are handled:**

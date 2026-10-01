@@ -10,7 +10,14 @@ from findr.adapters.inbound.http.routers.auth_router import router as auth_route
 from findr.adapters.inbound.http.routers.documents_router import router as documents_router
 from findr.adapters.inbound.http.routers.search_router import router as search_router
 from findr.adapters.inbound.http.routers.sources_router import router as sources_router
+from findr.adapters.inbound.http.routers.sources_router import (
+    workspace_router as workspace_sources_router,
+)
 from findr.adapters.inbound.http.routers.uploads_router import router as uploads_router
+from findr.adapters.inbound.http.routers.uploads_router import (
+    workspace_router as workspace_uploads_router,
+)
+from findr.adapters.inbound.http.routers.workspaces_router import router as workspaces_router
 from findr.adapters.outbound.crypto.password_hasher_argon2 import Argon2Hasher
 from findr.adapters.outbound.elasticsearch.es_client import create_es_client, ensure_index
 from findr.adapters.outbound.embeddings.sentence_transformer_provider import (
@@ -116,6 +123,9 @@ app.include_router(search_router)
 app.include_router(sources_router)
 app.include_router(documents_router)
 app.include_router(uploads_router)
+app.include_router(workspaces_router)
+app.include_router(workspace_sources_router)
+app.include_router(workspace_uploads_router)
 
 
 @app.get("/")

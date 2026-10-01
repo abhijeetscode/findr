@@ -22,6 +22,7 @@ class UploadedFileRepositoryPostgres:
     def create(
         self,
         user_id: int,
+        workspace_id: int,
         original_filename: str,
         mime_type: str,
         file_size_bytes: int,
@@ -33,6 +34,7 @@ class UploadedFileRepositoryPostgres:
         row = UploadedFileModel(
             document_id=None,
             user_id=user_id,
+            workspace_id=workspace_id,
             original_filename=original_filename,
             mime_type=mime_type,
             file_size_bytes=file_size_bytes,
@@ -61,10 +63,10 @@ class UploadedFileRepositoryPostgres:
         ).scalar_one_or_none()
         return _to_domain(row) if row is not None else None
 
-    def list_for_user(self, user_id: int) -> list[UploadedFile]:
+    def list_for_workspace(self, workspace_id: int) -> list[UploadedFile]:
         rows = self._db.execute(
             select(UploadedFileModel)
-            .where(UploadedFileModel.user_id == user_id)
+            .where(UploadedFileModel.workspace_id == workspace_id)
             .order_by(UploadedFileModel.created_at.desc(), UploadedFileModel.id.desc())
         ).scalars()
         return [_to_domain(r) for r in rows]
@@ -156,6 +158,7 @@ def _to_domain(row: UploadedFileModel) -> UploadedFile:
     return UploadedFile(
         id=row.id,
         user_id=row.user_id,
+        workspace_id=row.workspace_id,
         original_filename=row.original_filename,
         mime_type=row.mime_type,
         file_size_bytes=row.file_size_bytes,

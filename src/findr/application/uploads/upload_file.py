@@ -40,7 +40,11 @@ class UploadFile:
         self._unit_of_work = unit_of_work
         self._upload_queue = upload_queue
 
-    def execute(self, user_id: int, filename: str, mime_type: str, content: bytes) -> UploadedFile:
+    def execute(
+        self, user_id: int, workspace_id: int, filename: str, mime_type: str, content: bytes
+    ) -> UploadedFile:
+        """The caller must already have checked the workspace belongs to the
+        user (GetWorkspace)."""
         if mime_type not in self._supported_mime_types:
             raise UnsupportedFileType(
                 f"Unsupported file type {mime_type!r}; upload a PDF, DOCX, TXT or Markdown file"
@@ -51,6 +55,7 @@ class UploadFile:
         storage_path = self._file_storage.save(user_id, filename, content)
         upload = self._uploaded_file_repo.create(
             user_id=user_id,
+            workspace_id=workspace_id,
             original_filename=filename,
             mime_type=mime_type,
             file_size_bytes=len(content),
