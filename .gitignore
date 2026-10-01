@@ -19,3 +19,6 @@ wheels/
 
 # macOS
 .DS_Store
+
+# Local upload storage when running outside Docker
+data/

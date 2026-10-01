@@ -19,4 +19,5 @@ Findr is a unified search platform: users connect data sources (Gmail, Slack, Wh
 
 ## Git commits
 
+- Never commit or push unless explicitly asked to. Finishing a task, fixing something, or making a follow-up change is not a request to commit — leave changes uncommitted in the working tree for review.
 - Do not add a `Co-Authored-By` line to commit messages.

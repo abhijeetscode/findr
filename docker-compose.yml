@@ -8,11 +8,66 @@ services:
     environment:
       FINDR_DATABASE_URL: postgresql+psycopg://findr:findr@postgres:5432/findr
       FINDR_ELASTICSEARCH_URL: http://elasticsearch:9200
+      FINDR_UPLOAD_STORAGE_ROOT: /data/uploads
+      FINDR_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - findr_uploads_data:/data/uploads
+      - findr_model_cache:/data/hf-cache
     depends_on:
       postgres:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Processes uploads in the background: OCR, tables, chunking, embeddings
+  # (specs/upload-chunking.md §5). One process, one upload at a time — the
+  # work is CPU-bound and needs ~3-4GB while running. More throughput, memory
+  # permitting: `docker compose up -d --scale worker=2`.
+  worker:
+    build: .
+    command:
+      [
+        "taskiq", "worker", "findr.adapters.taskiq.tasks:broker",
+        "--workers", "1",
+        "--max-async-tasks", "1",
+        "--max-prefetch", "1",
+        "--ack-type", "when_executed",
+      ]
+    env_file:
+      - .env
+    environment:
+      FINDR_DATABASE_URL: postgresql+psycopg://findr:findr@postgres:5432/findr
+      FINDR_ELASTICSEARCH_URL: http://elasticsearch:9200
+      FINDR_UPLOAD_STORAGE_ROOT: /data/uploads
+      FINDR_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - findr_uploads_data:/data/uploads
+      - findr_model_cache:/data/hf-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Upload job queue. Append-only persistence so queued jobs survive a
+  # restart; capped at 64MB with noeviction, so it refuses new jobs rather
+  # than silently dropping queued ones (~190 bytes per job message).
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - findr_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
 
   postgres:
     image: postgres:16
@@ -49,3 +104,6 @@ services:
 volumes:
   findr_postgres_data:
   findr_es_data:
+  findr_uploads_data:
+  findr_model_cache:
+  findr_redis_data:

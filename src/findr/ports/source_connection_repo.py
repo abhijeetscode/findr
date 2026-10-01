@@ -10,13 +10,16 @@ class SourceConnectionRepository(Protocol):
         self,
         user_id: int,
         source_type: SourceType,
-        external_account: str,
+        external_account: str | None,
         display_name: str | None = None,
     ) -> SourceConnection: ...
     def get(self, connection_id: int, user_id: int) -> SourceConnection | None: ...
     def get_by_account(
-        self, user_id: int, source_type: SourceType, external_account: str
-    ) -> SourceConnection | None: ...
+        self, user_id: int, source_type: SourceType, external_account: str | None
+    ) -> SourceConnection | None:
+        """external_account=None matches a NULL column (the per-user FILE
+        "Uploaded files" connection has no external account)."""
+        ...
     def list_for_user(self, user_id: int) -> list[SourceConnection]: ...
     def list_active(self) -> list[SourceConnection]:
         """All connections across all users with status ACTIVE — used by the

@@ -1,13 +1,19 @@
 from datetime import datetime
 
-from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
+import uuid
+
+from findr.adapters.outbound.elasticsearch.es_client import INDEX_MAPPING, ensure_index
+from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import (
+    ElasticsearchIndex,
+    _reciprocal_rank_fusion,
+)
 from findr.application.search.search_documents import SearchDocuments
 from findr.domain.entities import Document
 from findr.domain.value_objects import SourceType
 
 
 def _make_document(
-    *, doc_id, user_id, connection_id, external_id, subject, body_text, thread_id=None
+    *, doc_id, user_id, connection_id, external_id, subject, body_text, thread_id=None, chunks=()
 ) -> Document:
     return Document(
         id=doc_id,
@@ -20,11 +26,26 @@ def _make_document(
         body_text=body_text,
         sent_at=datetime(2024, 1, 1),
         thread_id=thread_id,
+        chunks=list(chunks),
     )
 
 
-def test_search_is_isolated_per_user(es_client, es_index):
-    search_index = ElasticsearchIndex(es_client, es_index)
+def _upload(doc_id, chunk_texts, *, user_id=1, subject="notes.txt", body_text=None, chunk_factory):
+    """An uploaded-file document with the given chunks."""
+    chunks = [chunk_factory(text, i) for i, text in enumerate(chunk_texts)]
+    return _make_document(
+        doc_id=doc_id,
+        user_id=user_id,
+        connection_id=9,
+        external_id=f"upload-{doc_id}",
+        subject=subject,
+        body_text=body_text if body_text is not None else "\n\n".join(chunk_texts),
+        chunks=chunks,
+    )
+
+
+def test_search_is_isolated_per_user(es_client, es_index, fake_embedding_provider):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
     search_index.index_documents(
         [
             _make_document(
@@ -59,8 +80,8 @@ def test_search_is_isolated_per_user(es_client, es_index):
     assert b_hits[0].document.user_id == 2
 
 
-def test_upsert_dedups_on_document_id(es_client, es_index):
-    search_index = ElasticsearchIndex(es_client, es_index)
+def test_upsert_dedups_on_document_id(es_client, es_index, fake_embedding_provider):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
     search_index.index_documents(
         [
             _make_document(
@@ -98,8 +119,8 @@ def test_upsert_dedups_on_document_id(es_client, es_index):
     assert search.execute(1, "old") == []
 
 
-def test_delete_documents_removes_from_search(es_client, es_index):
-    search_index = ElasticsearchIndex(es_client, es_index)
+def test_delete_documents_removes_from_search(es_client, es_index, fake_embedding_provider):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
     search_index.index_documents(
         [
             _make_document(
@@ -123,8 +144,8 @@ def test_delete_documents_removes_from_search(es_client, es_index):
     assert search.execute(1, "trashed") == []
 
 
-def test_thread_id_round_trips_through_index_and_search(es_client, es_index):
-    search_index = ElasticsearchIndex(es_client, es_index)
+def test_thread_id_round_trips_through_index_and_search(es_client, es_index, fake_embedding_provider):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
     search_index.index_documents(
         [
             _make_document(
@@ -157,11 +178,11 @@ def test_thread_id_round_trips_through_index_and_search(es_client, es_index):
     assert hits[0].document.thread_id == "thread-abc"
 
 
-def test_search_highlights_matches_with_bracket_markers(es_client, es_index):
+def test_search_highlights_matches_with_bracket_markers(es_client, es_index, fake_embedding_provider):
     # The frontend's renderSnippet() JS turns "[" / "]" into <strong> tags —
     # this pins ES's highlight config to those exact markers (see
     # specs/elasticsearch-search.md §5), not its default <em> tags.
-    search_index = ElasticsearchIndex(es_client, es_index)
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
     search_index.index_documents(
         [
             _make_document(
@@ -183,8 +204,8 @@ def test_search_highlights_matches_with_bracket_markers(es_client, es_index):
     assert "[renewal]" in hits[0].snippet.lower()
 
 
-def test_query_with_special_characters_does_not_error(es_client, es_index):
-    search_index = ElasticsearchIndex(es_client, es_index)
+def test_query_with_special_characters_does_not_error(es_client, es_index, fake_embedding_provider):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
     search_index.index_documents(
         [
             _make_document(
@@ -204,3 +225,170 @@ def test_query_with_special_characters_does_not_error(es_client, es_index):
     hits = search.execute(1, 'terms: "24" -months*')
 
     assert isinstance(hits, list)  # must not raise a query-syntax error
+
+
+def test_only_uploads_get_chunk_vectors(es_client, es_index, fake_embedding_provider, chunk_factory):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    email = _make_document(
+        doc_id=1, user_id=1, connection_id=1, external_id="msg-1",
+        subject="Renewal", body_text="renewal terms",
+        # Even if a Gmail document somehow carried chunks, it isn't embedded.
+        chunks=[chunk_factory("renewal terms")],
+    )
+    search_index.index_documents([email], SourceType.GMAIL, "a@gmail.com")
+    assert fake_embedding_provider.document_batches == []
+    assert "chunks" not in es_client.get(index=es_index, id="1")["_source"]
+
+    upload = _upload(2, ["first chunk", "second chunk"], chunk_factory=chunk_factory)
+    search_index.index_documents([upload], SourceType.FILE, None)
+
+    # One batch call per document, not one per chunk.
+    assert fake_embedding_provider.document_batches == [["first chunk", "second chunk"]]
+    stored = es_client.get(index=es_index, id="2")["_source"]["chunks"]
+    assert [c["text"] for c in stored] == ["first chunk", "second chunk"]
+    assert all(len(c["embedding"]) == 1024 for c in stored)
+    assert stored[1]["metadata"]["chunk_index"] == 1
+    assert stored[0]["metadata"]["document_version"] == 1
+    assert stored[0]["metadata"]["parser_version"] == "unstructured-test/chunking-v1"
+
+
+def test_semantic_match_on_a_chunk_uses_it_as_the_snippet(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    # The fake embedder is a bag of words: "zebra migration" matches the
+    # second chunk exactly, but keyword search can't see it because this
+    # document's body_text deliberately doesn't contain those words.
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    upload = _upload(
+        1, ["opening paragraph about budgets", "zebra migration"],
+        body_text="opening paragraph about budgets", chunk_factory=chunk_factory,
+    )
+    search_index.index_documents([upload], SourceType.FILE, None)
+
+    hits = SearchDocuments(search_index).execute(1, "zebra migration")
+
+    assert [h.document.external_id for h in hits] == ["upload-1"]
+    assert hits[0].snippet == "zebra migration"
+    assert hits[0].source_type == SourceType.FILE
+    # Vectors never come back in results.
+    assert hits[0].document.chunks == []
+
+
+def test_semantic_search_is_isolated_per_user_and_ignores_non_upload_vectors(
+    es_client, es_index, fake_embedding_provider
+):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    # Another user's upload.
+    es_client.index(
+        index=es_index, id="1", refresh=True,
+        document={
+            "user_id": 2, "connection_id": 2, "external_id": "u-1", "source_type": "file",
+            "subject": "x", "body_text": "unrelated",
+            "chunks": [{"text": "zebra migration", "kind": "text",
+                        "embedding": fake_embedding_provider.embed_query("zebra migration")}],
+        },
+    )
+    # A Gmail document carrying a (stale, pre-revision) vector.
+    es_client.index(
+        index=es_index, id="2", refresh=True,
+        document={
+            "user_id": 1, "connection_id": 1, "external_id": "m-1", "source_type": "gmail",
+            "subject": "x", "body_text": "unrelated",
+            "chunks": [{"text": "zebra migration", "kind": "text",
+                        "embedding": fake_embedding_provider.embed_query("zebra migration")}],
+        },
+    )
+
+    assert SearchDocuments(search_index).execute(1, "zebra migration") == []
+
+
+def test_keyword_search_still_finds_uploads_and_email(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    search_index.index_documents(
+        [_make_document(doc_id=1, user_id=1, connection_id=1, external_id="m-1",
+                        subject="Invoice INV-2291", body_text="payment due")],
+        SourceType.GMAIL, "a@gmail.com",
+    )
+    search_index.index_documents(
+        [_upload(2, ["invoice INV-2291 attached"], chunk_factory=chunk_factory)],
+        SourceType.FILE, None,
+    )
+
+    hits = SearchDocuments(search_index).execute(1, "INV-2291")
+
+    assert {h.source_type for h in hits} == {SourceType.GMAIL, SourceType.FILE}
+    assert all("[" in h.snippet for h in hits)
+
+
+def test_upload_without_chunks_stays_keyword_only(es_client, es_index, fake_embedding_provider):
+    # e.g. an upload from before chunking, reindexed.
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    search_index.index_documents(
+        [_make_document(doc_id=1, user_id=1, connection_id=9, external_id="u-1",
+                        subject="old.txt", body_text="lunch plans")],
+        SourceType.FILE, None,
+    )
+
+    assert "chunks" not in es_client.get(index=es_index, id="1")["_source"]
+    assert [h.document.external_id for h in SearchDocuments(search_index).execute(1, "lunch")] == ["u-1"]
+
+
+def test_semantic_search_finds_a_passage_deep_in_a_long_upload(
+    es_client, es_index, real_embedding_provider, chunk_factory
+):
+    # The test that proves chunking works (specs/upload-chunking.md §11):
+    # the relevant passage sits far past the first 512 tokens, where a single
+    # whole-document embedding would never have seen it. The query shares
+    # no words with it, so only the real model's semantics can find it.
+    filler = [
+        f"Section {i}. The office relocation checklist covers desks, cabling and parking permits."
+        for i in range(40)
+    ]
+    relevant = "The subscription cost for next year has been updated; the annual fee is 20% higher."
+    search_index = ElasticsearchIndex(es_client, es_index, real_embedding_provider)
+    search_index.index_documents(
+        [_upload(1, [*filler, relevant], subject="handbook.pdf", chunk_factory=chunk_factory)],
+        SourceType.FILE, None,
+    )
+
+    hits = SearchDocuments(search_index).execute(1, "renewal pricing")
+
+    assert [h.document.external_id for h in hits] == ["upload-1"]
+    assert hits[0].snippet.startswith("The subscription cost")
+
+
+def test_ensure_index_adds_chunks_field_to_a_pre_existing_index(es_client):
+    index_name = f"findr_test_{uuid.uuid4().hex[:12]}"
+    legacy_mapping = {
+        "properties": {
+            name: spec for name, spec in INDEX_MAPPING["properties"].items() if name != "chunks"
+        }
+    }
+    es_client.indices.create(index=index_name, mappings=legacy_mapping)
+    try:
+        ensure_index(es_client, index_name)
+        ensure_index(es_client, index_name)  # idempotent
+
+        properties = es_client.indices.get_mapping(index=index_name)[index_name]["mappings"][
+            "properties"
+        ]
+        chunks = properties["chunks"]
+        assert chunks["type"] == "nested"
+        assert chunks["properties"]["embedding"]["dims"] == 1024
+        assert chunks["properties"]["metadata"]["properties"]["document_version"]["type"] == "integer"
+        assert chunks["properties"]["metadata"]["properties"]["content_sha256"]["type"] == "keyword"
+    finally:
+        es_client.indices.delete(index=index_name, ignore_unavailable=True)
+
+
+def test_reciprocal_rank_fusion_rewards_agreement_and_keeps_bm25_hit():
+    bm25 = [{"_id": "a", "highlight": {"x": ["[a]"]}}, {"_id": "b"}]
+    knn = [{"_id": "c"}, {"_id": "a"}]
+
+    fused = _reciprocal_rank_fusion([bm25, knn])
+
+    assert [raw["_id"] for raw, _ in fused] == ["a", "c", "b"]
+    assert fused[0][0] is bm25[0]  # the highlighted copy wins
+    assert fused[0][1] == 1 / 61 + 1 / 62

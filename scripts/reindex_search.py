@@ -1,6 +1,8 @@
 """On-demand backfill: Postgres -> Elasticsearch. See
 specs/elasticsearch-search.md §3.4. Bootstraps a fresh environment or
-recovers from Elasticsearch data loss. Run manually:
+recovers from Elasticsearch data loss, and rebuilds uploaded documents'
+chunk vectors from the document_chunks table (specs/semantic-search.md §4,
+specs/upload-chunking.md §6.4). Run manually:
 
     uv run python scripts/reindex_search.py
 
@@ -24,11 +26,18 @@ from findr.adapters.outbound.elasticsearch.es_client import (  # noqa: E402
 from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import (  # noqa: E402
     ElasticsearchIndex,
 )
+from findr.adapters.outbound.embeddings.sentence_transformer_provider import (  # noqa: E402
+    create_embedding_provider,
+)
 from findr.adapters.outbound.postgres.db import create_db_engine  # noqa: E402
+from findr.adapters.outbound.postgres.document_repository_postgres import (  # noqa: E402
+    load_chunks,
+)
 from findr.adapters.outbound.postgres.models import DocumentModel, SourceConnectionModel  # noqa: E402
 from findr.domain.entities import Document  # noqa: E402
 from findr.domain.value_objects import SourceType  # noqa: E402
 from findr.config import Settings  # noqa: E402
+from findr.ports.embedding_provider import EmbeddingProvider  # noqa: E402
 
 BATCH_SIZE = 500
 
@@ -48,6 +57,11 @@ def _to_document(row: DocumentModel) -> Document:
     )
 
 
+def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
+    """Module-level so tests can swap in a fake instead of the real model."""
+    return create_embedding_provider(settings)
+
+
 def main() -> None:
     settings = Settings()
     engine = create_db_engine(settings.database_url)
@@ -55,7 +69,9 @@ def main() -> None:
 
     es_client = create_es_client(settings.elasticsearch_url)
     ensure_index(es_client, settings.elasticsearch_index)
-    search_index = ElasticsearchIndex(es_client, settings.elasticsearch_index)
+    search_index = ElasticsearchIndex(
+        es_client, settings.elasticsearch_index, build_embedding_provider(settings)
+    )
 
     db = session_factory()
     try:
@@ -81,6 +97,11 @@ def main() -> None:
                 if not rows:
                     break
                 documents = [_to_document(row) for row in rows]
+                # Chunk vectors are rebuilt from document_chunks — no file is
+                # re-parsed (specs/upload-chunking.md §6.4).
+                chunks = load_chunks(db, [doc.id for doc in documents])
+                for doc in documents:
+                    doc.chunks = chunks.get(doc.id, [])
                 search_index.index_documents(
                     documents, SourceType(connection.source_type), connection.external_account
                 )

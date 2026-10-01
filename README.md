@@ -6,7 +6,7 @@ See `specs/` for the design behind each feature (spec-driven development — eve
 
 ## Requirements
 
-- Python 3.14
+- Python 3.13
 - [uv](https://docs.astral.sh/uv/)
 - [Docker](https://www.docker.com/) — for Postgres + Elasticsearch, or to run the whole app in containers
 

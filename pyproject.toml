@@ -3,7 +3,7 @@ name = "findr"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastapi[standard]>=0.141.1",
     "httpx>=0.27",
@@ -15,6 +15,22 @@ dependencies = [
     "tenacity>=8.2",
     "psycopg[binary]>=3.1",
     "elasticsearch>=8.15,<9",
+    "python-multipart>=0.0.9",
+    "unstructured[pdf,docx,md]>=0.27",
+    "taskiq>=0.13",
+    "taskiq-redis>=1.2",
+    "sentence-transformers>=6.0",
+    "torch>=2.9",
+    # Pulled in by unstructured-inference; declared directly only so it can
+    # come from the same CPU-only index as torch on Linux (a PyPI torchvision
+    # against the +cpu torch fails at import: "operator torchvision::nms does
+    # not exist").
+    "torchvision>=0.24",
+    # spaCy model unstructured uses to classify text (sentence checks). Left
+    # undeclared, unstructured downloads it on first use into site-packages,
+    # which the container's non-root user can't write — so DOCX/Markdown/TXT
+    # parsing fails there. Same version and wheel unstructured pins.
+    "en-core-web-sm==3.8.0",
 ]
 
 [project.scripts]
@@ -24,7 +40,25 @@ findr = "findr:main"
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    # Builds DOCX fixtures in tests (unstructured also depends on it at runtime).
+    "python-docx>=1.1",
+    # Builds PDFs with a real table in tests.
+    "reportlab>=4.0",
 ]
+
+# CPU-only torch on Linux (the Docker image) — the default PyPI wheel bundles
+# multiple GB of CUDA libraries this app never uses. macOS wheels are already
+# CPU/MPS-only, so dev machines keep resolving from PyPI. See
+# specs/semantic-search.md §3.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

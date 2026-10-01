@@ -23,7 +23,7 @@ class SourceConnectionRepositoryPostgres:
         self,
         user_id: int,
         source_type: SourceType,
-        external_account: str,
+        external_account: str | None,
         display_name: str | None = None,
     ) -> SourceConnection:
         row = SourceConnectionModel(
@@ -51,15 +51,31 @@ class SourceConnectionRepositoryPostgres:
         return _to_domain(row)
 
     def get_by_account(
-        self, user_id: int, source_type: SourceType, external_account: str
+        self, user_id: int, source_type: SourceType, external_account: str | None
     ) -> SourceConnection | None:
-        row = self._db.execute(
-            select(SourceConnectionModel).where(
-                SourceConnectionModel.user_id == user_id,
-                SourceConnectionModel.source_type == source_type.value,
-                SourceConnectionModel.external_account == external_account,
+        # IS NULL, not "= NULL", for the FILE connection's absent account.
+        # Postgres treats NULLs as distinct in the (user_id, source_type,
+        # external_account) unique constraint, so two concurrent first
+        # uploads could each create a FILE connection — .first() keeps that
+        # from turning into a MultipleResultsFound on every later upload.
+        account_clause = (
+            SourceConnectionModel.external_account.is_(None)
+            if external_account is None
+            else SourceConnectionModel.external_account == external_account
+        )
+        row = (
+            self._db.execute(
+                select(SourceConnectionModel)
+                .where(
+                    SourceConnectionModel.user_id == user_id,
+                    SourceConnectionModel.source_type == source_type.value,
+                    account_clause,
+                )
+                .order_by(SourceConnectionModel.id)
             )
-        ).scalar_one_or_none()
+            .scalars()
+            .first()
+        )
         return _to_domain(row) if row is not None else None
 
     def list_for_user(self, user_id: int) -> list[SourceConnection]:

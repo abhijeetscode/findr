@@ -6,8 +6,11 @@ from sqlalchemy.orm import Session
 
 from findr.adapters.outbound.postgres.session_store_postgres import SessionStorePostgres
 from findr.adapters.outbound.postgres.user_repository_postgres import UserRepositoryPostgres
+from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
+from findr.adapters.outbound.files.local_file_storage import LocalFileStorage
 from findr.config import Settings
 from findr.domain.entities import User
+from findr.ports.upload_queue import UploadQueue
 
 SESSION_COOKIE_NAME = "findr_session"
 
@@ -27,6 +30,27 @@ def get_settings(request: Request) -> Settings:
 
 def get_es_client(request: Request) -> Elasticsearch:
     return request.app.state.es_client
+
+
+def get_search_index(
+    request: Request,
+    es_client: Elasticsearch = Depends(get_es_client),
+    settings: Settings = Depends(get_settings),
+) -> ElasticsearchIndex:
+    return ElasticsearchIndex(
+        es_client,
+        settings.elasticsearch_index,
+        request.app.state.embedding_provider,
+        min_similarity=settings.semantic_min_similarity,
+    )
+
+
+def get_upload_queue(request: Request) -> UploadQueue:
+    return request.app.state.upload_queue
+
+
+def get_file_storage(settings: Settings = Depends(get_settings)) -> LocalFileStorage:
+    return LocalFileStorage(settings.upload_storage_root)
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db_session)) -> User:
