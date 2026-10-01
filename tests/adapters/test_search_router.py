@@ -43,23 +43,37 @@ def test_source_url_is_none_for_uploaded_files():
     assert _source_url(_hit(SourceType.FILE, "0b1c2d3e-uuid")) is None
 
 
+DEMO_LOGIN = {"email": "demouser", "password": "password@2050"}
+
+
+def _login_with_workspace(client, name="Client A") -> int:
+    client.post("/auth/login", json=DEMO_LOGIN)
+    return client.post("/workspaces", json={"name": name}).json()["id"]
+
+
 def test_search_endpoint_requires_login(app_env):
     with TestClient(app) as client:
-        resp = client.get("/search", params={"q": "renewal"})
+        resp = client.get("/workspaces/1/search", params={"q": "renewal"})
         assert resp.status_code == 401
 
 
-def _seed_document(client, user_id: int, *, subject: str, body_text: str, sent_at=None) -> None:
+def test_old_user_wide_search_endpoint_is_gone(app_env):
+    with TestClient(app) as client:
+        client.post("/auth/login", json=DEMO_LOGIN)
+        assert client.get("/search", params={"q": "renewal"}).status_code == 404
+
+
+def _seed_document(
+    user_id: int, workspace_id: int, *, subject: str, body_text: str, sent_at=None,
+    account: str = "a@gmail.com",
+) -> None:
     # Writes through both stores directly, the way SyncSource would: insert
     # into Postgres (to get a real, DB-assigned id), then index the
-    # persisted document into the app's own Elasticsearch client/index
-    # (app.state.*, set up by the running app's lifespan) — a document
-    # inserted only into Postgres is invisible to /search, since there's no
-    # trigger keeping Elasticsearch in sync the way SQLite FTS5 had.
+    # persisted document into the app's own Elasticsearch index.
     db = app.state.session_factory()
     try:
         connection = SourceConnectionRepositoryPostgres(db).create(
-            user_id, SourceType.GMAIL, "a@gmail.com"
+            user_id, workspace_id, SourceType.GMAIL, account
         )
         db.commit()
         persisted = DocumentRepositoryPostgres(db).upsert_many(
@@ -68,7 +82,7 @@ def _seed_document(client, user_id: int, *, subject: str, body_text: str, sent_a
                     id=0,
                     user_id=user_id,
                     connection_id=connection.id,
-                    external_id="msg-1",
+                    external_id=f"msg-{workspace_id}",
                     subject=subject,
                     sender="x@y.com",
                     recipients="Inbox",
@@ -86,46 +100,53 @@ def _seed_document(client, user_id: int, *, subject: str, body_text: str, sent_a
         app.state.settings.elasticsearch_index,
         app.state.embedding_provider,
     )
-    search_index.index_documents(persisted, SourceType.GMAIL, "a@gmail.com")
+    search_index.index_documents(persisted, SourceType.GMAIL, account, workspace_id)
 
 
-def test_search_endpoint_returns_only_the_logged_in_users_documents(app_env):
+def test_search_returns_only_the_current_workspaces_documents(app_env):
     with TestClient(app) as client:
-        client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
+        a = _login_with_workspace(client, "Client A")
+        b = client.post("/workspaces", json={"name": "Client B"}).json()["id"]
         user_id = client.get("/auth/me").json()["id"]
-
+        _seed_document(user_id, a, subject="Q3 renewal terms", body_text="please review the renewal terms")
         _seed_document(
-            client, user_id, subject="Q3 renewal terms", body_text="please review the renewal terms"
+            user_id, b, subject="B renewal", body_text="client B renewal", account="b@gmail.com"
         )
 
-        resp = client.get("/search", params={"q": "renewal"})
+        resp = client.get(f"/workspaces/{a}/search", params={"q": "renewal"})
         assert resp.status_code == 200
         results = resp.json()["results"]
-        assert len(results) == 1
-        assert results[0]["subject"] == "Q3 renewal terms"
+        assert [r["subject"] for r in results] == ["Q3 renewal terms"]
         assert results[0]["source_type"] == "gmail"
         assert results[0]["recipients"] == "Inbox"
-        assert results[0]["url"] == "https://mail.google.com/mail/u/0/#all/msg-1"
+        assert results[0]["url"] == f"https://mail.google.com/mail/u/0/#all/msg-{a}"
         # The frontend's renderSnippet() JS turns "[" / "]" into <strong>
-        # tags — pins the end-to-end highlight response shape, not just the
-        # adapter-level ES config.
+        # tags — pins the end-to-end highlight response shape.
         assert "[renewal]" in results[0]["snippet"].lower()
+
+        b_results = client.get(f"/workspaces/{b}/search", params={"q": "renewal"}).json()["results"]
+        assert [r["subject"] for r in b_results] == ["B renewal"]
+
+
+def test_search_in_someone_elses_or_a_missing_workspace_is_404(app_env):
+    with TestClient(app) as client:
+        a = _login_with_workspace(client)
+        assert client.get(f"/workspaces/{a + 999}/search", params={"q": "x"}).status_code == 404
 
 
 def test_search_endpoint_serializes_documents_with_a_sent_at_timestamp(app_env):
     with TestClient(app) as client:
-        client.post("/auth/login", json={"email": "demouser", "password": "password@2050"})
+        a = _login_with_workspace(client)
         user_id = client.get("/auth/me").json()["id"]
-
         _seed_document(
-            client,
             user_id,
+            a,
             subject="Q3 renewal terms",
             body_text="please review the renewal terms",
             sent_at=datetime(2026, 9, 20, 14, 30, 0),
         )
 
-        resp = client.get("/search", params={"q": "renewal"})
+        resp = client.get(f"/workspaces/{a}/search", params={"q": "renewal"})
 
         assert resp.status_code == 200
         assert resp.json()["results"][0]["sent_at"] == "2026-09-20T14:30:00"

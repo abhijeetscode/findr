@@ -29,6 +29,7 @@ CHUNKS_FIELD_MAPPING = {
                 "chunk_index": {"type": "integer"},
                 "document_version": {"type": "integer"},
                 "content_sha256": {"type": "keyword"},
+                "workspace_id": {"type": "keyword"},
                 "filename": {"type": "keyword"},
                 "mime_type": {"type": "keyword"},
                 "page_start": {"type": "integer"},
@@ -49,6 +50,9 @@ CHUNKS_FIELD_MAPPING = {
 INDEX_MAPPING = {
     "properties": {
         "user_id": {"type": "keyword"},
+        # Every search filters on it — the client-isolation boundary
+        # (specs/workspaces.md §2).
+        "workspace_id": {"type": "keyword"},
         "connection_id": {"type": "keyword"},
         "external_id": {"type": "keyword"},
         "source_type": {"type": "keyword"},
@@ -77,4 +81,10 @@ def ensure_index(client: Elasticsearch, index_name: str) -> None:
     if not client.indices.exists(index=index_name):
         client.indices.create(index=index_name, mappings=INDEX_MAPPING)
         return
-    client.indices.put_mapping(index=index_name, properties={"chunks": CHUNKS_FIELD_MAPPING})
+    client.indices.put_mapping(
+        index=index_name,
+        properties={
+            "chunks": CHUNKS_FIELD_MAPPING,
+            "workspace_id": INDEX_MAPPING["properties"]["workspace_id"],
+        },
+    )

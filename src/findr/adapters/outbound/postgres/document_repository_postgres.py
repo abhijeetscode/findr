@@ -4,7 +4,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session as DbSession
 
-from findr.adapters.outbound.postgres.models import DocumentChunkModel, DocumentModel
+from findr.adapters.outbound.postgres.models import (
+    DocumentChunkModel,
+    DocumentModel,
+    SourceConnectionModel,
+)
 from findr.adapters.outbound.system_clock import SystemClock
 from findr.domain.entities import ChunkMetadata, Document, DocumentChunk
 from findr.domain.value_objects import ChunkKind
@@ -35,6 +39,13 @@ class DocumentRepositoryPostgres:
             stmt = pg_insert(DocumentModel).values(
                 user_id=doc.user_id,
                 connection_id=doc.connection_id,
+                # Always the connection's workspace — never trusted from the
+                # caller, so it can't disagree (specs/workspaces.md §3.2).
+                workspace_id=(
+                    select(SourceConnectionModel.workspace_id)
+                    .where(SourceConnectionModel.id == doc.connection_id)
+                    .scalar_subquery()
+                ),
                 external_id=doc.external_id,
                 subject=doc.subject,
                 sender=doc.sender,
@@ -53,8 +64,8 @@ class DocumentRepositoryPostgres:
                     "body_text": stmt.excluded.body_text,
                     "sent_at": stmt.excluded.sent_at,
                 },
-            ).returning(DocumentModel.id)
-            doc.id = self._db.execute(stmt).scalar_one()
+            ).returning(DocumentModel.id, DocumentModel.workspace_id)
+            doc.id, doc.workspace_id = self._db.execute(stmt).one()
             if doc.chunks:
                 self._replace_chunks(doc.id, doc.chunks)
         self._db.flush()
@@ -91,6 +102,12 @@ class DocumentRepositoryPostgres:
         self._db.execute(delete(DocumentModel).where(DocumentModel.id == document_id))
         self._db.flush()
 
+    def delete_for_workspace(self, workspace_id: int) -> None:
+        doomed = select(DocumentModel.id).where(DocumentModel.workspace_id == workspace_id)
+        self._db.execute(delete(DocumentChunkModel).where(DocumentChunkModel.document_id.in_(doomed)))
+        self._db.execute(delete(DocumentModel).where(DocumentModel.workspace_id == workspace_id))
+        self._db.flush()
+
     def _replace_chunks(self, document_id: int, chunks: list[DocumentChunk]) -> None:
         self._db.execute(
             delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
@@ -104,6 +121,7 @@ class DocumentRepositoryPostgres:
                 table_html=chunk.table_html,
                 document_version=chunk.metadata.document_version,
                 content_sha256=chunk.metadata.content_sha256,
+                workspace_id=chunk.metadata.workspace_id,
                 metadata_json=_metadata_to_json(chunk.metadata),
             )
             for chunk in chunks
@@ -127,8 +145,8 @@ def load_chunks(db: DbSession, document_ids: list[int]) -> dict[int, list[Docume
     return by_document
 
 
-# document_version and content_sha256 are real columns; everything else in
-# ChunkMetadata lives in metadata_json.
+# document_version, content_sha256 and workspace_id are real columns;
+# everything else in ChunkMetadata lives in metadata_json.
 _JSON_FIELDS = (
     "chunk_index",
     "filename",
@@ -157,6 +175,7 @@ def _chunk_to_domain(row: DocumentChunkModel) -> DocumentChunk:
             chunk_index=row.chunk_index,
             document_version=row.document_version,
             content_sha256=row.content_sha256,
+            workspace_id=row.workspace_id,
             filename=data["filename"],
             mime_type=data["mime_type"],
             page_start=data.get("page_start"),
@@ -182,4 +201,5 @@ def _to_domain(row: DocumentModel) -> Document:
         body_text=row.body_text,
         sent_at=row.sent_at,
         thread_id=row.thread_id,
+        workspace_id=row.workspace_id,
     )

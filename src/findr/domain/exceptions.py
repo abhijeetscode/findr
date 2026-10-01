@@ -45,3 +45,22 @@ class ExtractionFailed(DomainError):
 
 class UploadNotFound(DomainError):
     """Raised when an upload doesn't exist for the given user."""
+
+
+class WorkspaceNotFound(DomainError):
+    """Raised when a workspace doesn't exist for the given user — deliberately
+    not distinguished from "exists but belongs to someone else"."""
+
+
+class DuplicateWorkspaceName(DomainError):
+    """Raised when a user already has a workspace with this name (ignoring case)."""
+
+
+class InvalidWorkspaceName(DomainError):
+    """Raised for a blank or too-long workspace name."""
+
+
+class SourceInOtherWorkspace(DomainError):
+    """Raised when connecting an account that's already connected in another
+    of the user's workspaces — an account belongs to one workspace only
+    (specs/workspaces.md §5.2)."""

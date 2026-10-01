@@ -7,6 +7,7 @@ from findr.adapters.outbound.postgres.user_repository_postgres import UserReposi
 from findr.adapters.outbound.scheduler.sync_scheduler import _run_sync_tick
 from findr.config import Settings
 from findr.domain.value_objects import ConnectionStatus, SourceType
+from conftest import ensure_workspace
 
 
 def test_run_sync_tick_runs_end_to_end_for_a_connection_with_no_stored_credentials(
@@ -29,7 +30,7 @@ def test_run_sync_tick_runs_end_to_end_for_a_connection_with_no_stored_credentia
     user = UserRepositoryPostgres(db).create("a@example.com", "hash")
     db.commit()
     connection = SourceConnectionRepositoryPostgres(db).create(
-        user.id, SourceType.GMAIL, "a@gmail.com"
+        user.id, ensure_workspace(db, user.id).id, SourceType.GMAIL, "a@gmail.com"
     )
     db.commit()
     db.close()
@@ -63,7 +64,7 @@ def test_run_sync_tick_skips_uploaded_files_connections(
     db = db_session_factory()
     user = UserRepositoryPostgres(db).create("a@example.com", "hash")
     connection = SourceConnectionRepositoryPostgres(db).create(
-        user.id, SourceType.FILE, None, display_name="Uploaded files"
+        user.id, ensure_workspace(db, user.id).id, SourceType.FILE, None, display_name="Uploaded files"
     )
     db.commit()
     db.close()
@@ -96,6 +97,7 @@ def test_stale_upload_sweep_requeues_lost_uploads(db_session_factory, upload_que
     # Created an hour ago and never picked up — its message was lost.
     lost = UploadedFileRepositoryPostgres(db, clock=PastClock()).create(
         user_id=user.id,
+        workspace_id=ensure_workspace(db, user.id).id,
         original_filename="lost.txt",
         mime_type="text/plain",
         file_size_bytes=4,

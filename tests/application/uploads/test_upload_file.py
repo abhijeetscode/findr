@@ -99,11 +99,12 @@ class FakeUploadedFileRepository:
         self.rows: dict[int, UploadedFile] = {}
         self._clock = clock
 
-    def create(self, user_id, original_filename, mime_type, file_size_bytes, storage_path,
-               content_sha256, document_version):
+    def create(self, user_id, workspace_id, original_filename, mime_type, file_size_bytes,
+               storage_path, content_sha256, document_version):
         now = self._clock.now()
         row = UploadedFile(
-            id=len(self.rows) + 1, user_id=user_id, original_filename=original_filename,
+            id=len(self.rows) + 1, user_id=user_id, workspace_id=workspace_id,
+            original_filename=original_filename,
             mime_type=mime_type, file_size_bytes=file_size_bytes, storage_path=storage_path,
             content_sha256=content_sha256, document_version=document_version,
             status=UploadStatus.PENDING, document_id=None, error=None, attempts=0,
@@ -119,8 +120,8 @@ class FakeUploadedFileRepository:
     def get_by_document_id(self, document_id):
         return next((r for r in self.rows.values() if r.document_id == document_id), None)
 
-    def list_for_user(self, user_id):
-        return [r for r in self.rows.values() if r.user_id == user_id]
+    def list_for_workspace(self, workspace_id):
+        return [r for r in self.rows.values() if r.workspace_id == workspace_id]
 
     def claim(self, upload_id, stale_before):
         row = self.rows.get(upload_id)
@@ -167,8 +168,8 @@ class FakeDocumentParser:
         self._error = error
         self.calls: list[tuple] = []
 
-    def parse(self, content, mime_type, filename, document_version):
-        self.calls.append((content, mime_type, filename, document_version))
+    def parse(self, content, mime_type, filename, document_version, workspace_id):
+        self.calls.append((content, mime_type, filename, document_version, workspace_id))
         if self._error:
             raise self._error
         chunk = DocumentChunk(
@@ -177,7 +178,8 @@ class FakeDocumentParser:
             table_html=None,
             metadata=ChunkMetadata(
                 chunk_index=0, document_version=document_version,
-                content_sha256=hashlib.sha256(content).hexdigest(), filename=filename,
+                content_sha256=hashlib.sha256(content).hexdigest(), workspace_id=workspace_id,
+                filename=filename,
                 mime_type=mime_type, page_start=None, page_end=None, section_title=None,
                 element_types=["NarrativeText"], languages=["eng"], is_continuation=False,
                 parser_version="test",
@@ -190,20 +192,21 @@ class FakeSourceConnectionRepository:
     def __init__(self) -> None:
         self.connections: list[SourceConnection] = []
 
-    def create(self, user_id, source_type, external_account, display_name=None):
+    def create(self, user_id, workspace_id, source_type, external_account, display_name=None):
         connection = SourceConnection(
-            id=len(self.connections) + 1, user_id=user_id, source_type=source_type,
+            id=len(self.connections) + 1, user_id=user_id, workspace_id=workspace_id,
+            source_type=source_type,
             external_account=external_account, status=ConnectionStatus.ACTIVE, sync_cursor=None,
             last_synced_at=None, last_error=None, created_at=NOW, display_name=display_name,
         )
         self.connections.append(connection)
         return connection
 
-    def get_by_account(self, user_id, source_type, external_account):
+    def get_in_workspace(self, workspace_id, source_type, external_account):
         return next(
             (c for c in self.connections
-             if (c.user_id, c.source_type, c.external_account)
-             == (user_id, source_type, external_account)),
+             if (c.workspace_id, c.source_type, c.external_account)
+             == (workspace_id, source_type, external_account)),
             None,
         )
 
@@ -234,8 +237,8 @@ class FakeSearchIndex:
         self.deleted: list[tuple[int, list[str]]] = []
         self._index_error = index_error
 
-    def index_documents(self, documents, source_type, external_account):
-        self.indexed.append((list(documents), source_type, external_account))
+    def index_documents(self, documents, source_type, external_account, workspace_id):
+        self.indexed.append((list(documents), source_type, external_account, workspace_id))
         if self._index_error:
             raise self._index_error
 
@@ -255,9 +258,10 @@ class Env:
         self.uow = FakeUnitOfWork()
         self.queue = queue or FakeUploadQueue()
 
-    def upload(self, user_id=7, filename="terms.txt", mime="text/plain", content=b"hello"):
+    def upload(self, user_id=7, filename="terms.txt", mime="text/plain", content=b"hello",
+               workspace_id=1):
         use_case = UploadFile(SUPPORTED, self.storage, self.uploads, self.uow, self.queue)
-        return use_case.execute(user_id, filename, mime, content)
+        return use_case.execute(user_id, workspace_id, filename, mime, content)
 
     def process(self, upload_id):
         return ProcessUpload(
@@ -292,6 +296,7 @@ def test_upload_stores_records_pending_and_enqueues_after_commit():
     assert upload.status == UploadStatus.PENDING
     assert upload.document_id is None
     assert upload.document_version == 1
+    assert upload.workspace_id == 1
     assert upload.content_sha256 == hashlib.sha256(b"hello world").hexdigest()
     assert upload.file_size_bytes == 11
     assert env.storage.files[upload.storage_path] == b"hello world"
@@ -337,11 +342,26 @@ def test_process_creates_document_with_chunks_indexes_and_marks_ready():
     assert document.subject == "terms.txt"
     assert document.body_text == "quarterly renewal terms"
     assert [c.text for c in document.chunks] == ["quarterly renewal terms"]
-    assert env.parser.calls == [(b"hello", "text/plain", "terms.txt", 1)]
+    assert env.parser.calls == [(b"hello", "text/plain", "terms.txt", 1, 1)]
     [connection] = env.connections.connections
     assert (connection.source_type, connection.external_account) == (SourceType.FILE, None)
     assert connection.display_name == "Uploaded files"
-    assert env.search_index.indexed == [([document], SourceType.FILE, None)]
+    assert env.search_index.indexed == [([document], SourceType.FILE, None, 1)]
+    assert connection.workspace_id == 1
+    assert document.chunks[0].metadata.workspace_id == 1
+
+
+def test_each_workspace_gets_its_own_uploads_connection():
+    env = Env()
+    a = env.upload(content=b"a", workspace_id=1)
+    b = env.upload(content=b"b", workspace_id=2)
+    env.process(a.id)
+    env.process(b.id)
+
+    by_workspace = {c.workspace_id: c for c in env.connections.connections}
+    assert set(by_workspace) == {1, 2}
+    indexed_workspaces = [entry[3] for entry in env.search_index.indexed]
+    assert indexed_workspaces == [1, 2]
 
 
 def test_second_upload_reuses_the_uploads_connection():

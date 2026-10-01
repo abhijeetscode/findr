@@ -9,6 +9,7 @@ class SourceConnectionRepository(Protocol):
     def create(
         self,
         user_id: int,
+        workspace_id: int,
         source_type: SourceType,
         external_account: str | None,
         display_name: str | None = None,
@@ -17,10 +18,22 @@ class SourceConnectionRepository(Protocol):
     def get_by_account(
         self, user_id: int, source_type: SourceType, external_account: str | None
     ) -> SourceConnection | None:
-        """external_account=None matches a NULL column (the per-user FILE
-        "Uploaded files" connection has no external account)."""
+        """User-wide on purpose: an account (e.g. a Gmail address) can be
+        connected in only one of the user's workspaces, and this finds it
+        whichever workspace it's in (specs/workspaces.md §5.2).
+        external_account=None matches a NULL column."""
         ...
-    def list_for_user(self, user_id: int) -> list[SourceConnection]: ...
+    def get_in_workspace(
+        self, workspace_id: int, source_type: SourceType, external_account: str | None
+    ) -> SourceConnection | None:
+        """Like get_by_account but within one workspace — used for each
+        workspace's own "Uploaded files" connection."""
+        ...
+    def list_for_workspace(self, workspace_id: int) -> list[SourceConnection]: ...
+    def delete(self, connection_id: int) -> None:
+        """Removes the connection row, including its stored tokens. Its
+        documents must already be gone (foreign key)."""
+        ...
     def list_active(self) -> list[SourceConnection]:
         """All connections across all users with status ACTIVE — used by the
         background sync scheduler's tick, which isn't scoped to one user."""

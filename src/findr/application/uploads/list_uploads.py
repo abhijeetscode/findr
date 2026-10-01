@@ -7,8 +7,10 @@ class ListUploads:
     def __init__(self, uploaded_file_repo: UploadedFileRepository) -> None:
         self._uploads = uploaded_file_repo
 
-    def execute(self, user_id: int) -> list[UploadedFile]:
-        return self._uploads.list_for_user(user_id)
+    def execute(self, workspace_id: int) -> list[UploadedFile]:
+        """One workspace's uploads. The caller must already have checked the
+        workspace belongs to the user (GetWorkspace)."""
+        return self._uploads.list_for_workspace(workspace_id)
 
 
 class GetUpload:

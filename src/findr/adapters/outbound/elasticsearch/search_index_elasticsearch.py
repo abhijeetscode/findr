@@ -73,11 +73,16 @@ class ElasticsearchIndex:
         self._embedding_provider = embedding_provider
         self._min_similarity = min_similarity
 
-    def search(self, user_id: int, query: str) -> list[SearchHit]:
+    def search(self, user_id: int, workspace_id: int, query: str) -> list[SearchHit]:
         if not query.strip():
             return []
 
-        user_filter = {"term": {"user_id": user_id}}
+        # Both the workspace and (as a second guard) the user, on both legs:
+        # one client's documents never appear in another client's search.
+        scope_filter = [
+            {"term": {"workspace_id": workspace_id}},
+            {"term": {"user_id": user_id}},
+        ]
         source_filter = {"excludes": _SOURCE_EXCLUDES}
         bm25_body = {
             "query": {
@@ -88,7 +93,7 @@ class ElasticsearchIndex:
                             "fields": ["subject^2", "sender", "body_text"],
                         }
                     },
-                    "filter": user_filter,
+                    "filter": scope_filter,
                 }
             },
             "highlight": {
@@ -110,7 +115,7 @@ class ElasticsearchIndex:
                 # sources carry vectors, so stale vectors on anything else
                 # can never surface semantically (semantic-search.md §12.4).
                 "filter": [
-                    user_filter,
+                    *scope_filter,
                     {"terms": {"source_type": sorted(t.value for t in EMBEDDED_SOURCE_TYPES)}},
                 ],
                 # The best-matching chunk, for the snippet.
@@ -149,6 +154,7 @@ class ElasticsearchIndex:
                 body_text=source.get("body_text"),
                 sent_at=_parse_date(source.get("sent_at")),
                 thread_id=source.get("thread_id"),
+                workspace_id=_parse_int(source.get("workspace_id")),
             )
             hits.append(
                 SearchHit(
@@ -170,6 +176,7 @@ class ElasticsearchIndex:
         documents: list[Document],
         source_type: SourceType,
         external_account: str | None,
+        workspace_id: int,
     ) -> None:
         if not documents:
             return
@@ -178,7 +185,7 @@ class ElasticsearchIndex:
             {
                 "_index": self._index,
                 "_id": str(doc.id),
-                "_source": self._to_source(doc, source_type, external_account, embed),
+                "_source": self._to_source(doc, source_type, external_account, workspace_id, embed),
             }
             for doc in documents
         ]
@@ -189,10 +196,12 @@ class ElasticsearchIndex:
         doc: Document,
         source_type: SourceType,
         external_account: str | None,
+        workspace_id: int,
         embed: bool,
     ) -> dict:
         source = {
             "user_id": doc.user_id,
+            "workspace_id": workspace_id,
             "connection_id": doc.connection_id,
             "external_id": doc.external_id,
             "source_type": source_type.value,
@@ -231,6 +240,14 @@ class ElasticsearchIndex:
             refresh=True,
         )
 
+    def delete_workspace(self, workspace_id: int) -> None:
+        self._client.delete_by_query(
+            index=self._index,
+            query={"term": {"workspace_id": workspace_id}},
+            conflicts="proceed",
+            refresh=True,
+        )
+
 
 def _reciprocal_rank_fusion(legs: list[list[dict]]) -> list[tuple[dict, float]]:
     """Combines ranked hit lists by rank position alone — BM25 and cosine
@@ -259,6 +276,7 @@ def _chunk_to_source(chunk: DocumentChunk, vector: list[float]) -> dict:
             "chunk_index": metadata.chunk_index,
             "document_version": metadata.document_version,
             "content_sha256": metadata.content_sha256,
+            "workspace_id": metadata.workspace_id,
             "filename": metadata.filename,
             "mime_type": metadata.mime_type,
             "page_start": metadata.page_start,
@@ -287,6 +305,10 @@ def _build_snippet(highlight: dict, matched_chunk: str | None, fallback_body: st
     if matched_chunk:
         return matched_chunk[:_SNIPPET_LENGTH]
     return (fallback_body or "")[:_SNIPPET_LENGTH]
+
+
+def _parse_int(value) -> int | None:
+    return int(value) if value is not None else None
 
 
 def _parse_date(value: str | None) -> datetime | None:

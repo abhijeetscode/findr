@@ -9,7 +9,7 @@ from findr.adapters.outbound.postgres.user_repository_postgres import UserReposi
 from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
 from findr.adapters.outbound.files.local_file_storage import LocalFileStorage
 from findr.config import Settings
-from findr.domain.entities import User
+from findr.domain.entities import User, Workspace
 from findr.ports.upload_queue import UploadQueue
 
 SESSION_COOKIE_NAME = "findr_session"
@@ -62,3 +62,23 @@ def get_current_user(request: Request, db: Session = Depends(get_db_session)) ->
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     return user
+
+
+def get_workspace(
+    workspace_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> Workspace:
+    """Every /workspaces/{workspace_id}/... route depends on this: the id from
+    the URL is only trusted once loaded for the logged-in user. 404 alike for
+    "doesn't exist" and "someone else's" (specs/workspaces.md §2)."""
+    from findr.adapters.outbound.postgres.workspace_repository_postgres import (
+        WorkspaceRepositoryPostgres,
+    )
+    from findr.application.workspaces.manage_workspaces import GetWorkspace
+    from findr.domain.exceptions import WorkspaceNotFound
+
+    try:
+        return GetWorkspace(WorkspaceRepositoryPostgres(db)).execute(workspace_id, user.id)
+    except WorkspaceNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found") from exc
