@@ -12,7 +12,7 @@ from findr.ports.source_connector import SourceConnector
 
 class SyncSource:
     """Generic over SourceConnector — works for Gmail now, any future
-    connector (Slack, Drive, ...) unchanged, as long as that connector is
+    connector (Google Drive, ...) unchanged, as long as that connector is
     also bound to a specific connection like GmailConnector is.
 
     Never raises: one connection's failure is caught and recorded on that

@@ -6,7 +6,7 @@ Related: `CLAUDE.md` ("MVP scope: uploaded files + Gmail" — this spec is the "
 
 ## 1. Purpose & scope
 
-Let a user upload a file (PDF, DOCX, TXT, Markdown) and have its text content become searchable alongside their Gmail/Slack/Notion documents — the frontend already has an "Upload files" button, currently hidden (`Unified Search Interface.html`, `upload-btn hidden`, comment: *"File uploads aren't built yet (no backend endpoint)"*). This spec builds that endpoint.
+Let a user upload a file (PDF, DOCX, TXT, Markdown) and have its text content become searchable alongside their Gmail documents — the frontend already has an "Upload files" button, currently hidden (`Unified Search Interface.html`, `upload-btn hidden`, comment: *"File uploads aren't built yet (no backend endpoint)"*). This spec builds that endpoint.
 
 ### In scope
 - `POST /sources/upload` — multipart file upload, one file per request.
@@ -25,13 +25,13 @@ Let a user upload a file (PDF, DOCX, TXT, Markdown) and have its text content be
 
 ## 2. Why not reuse `SourceConnector`?
 
-Every existing source (Gmail/Slack/Notion) fits the same shape: OAuth credentials, a `SourceConnector.fetch_changes(credentials, cursor)` pulled on a timer by the background scheduler. A file upload is the opposite of that shape — push-based (the user acts once, right now), no OAuth, nothing to poll. Forcing it through `SourceConnector` would mean a connector whose `fetch_changes` does nothing (polled uselessly every scheduler tick for a source that never changes on its own) — a leaky abstraction. So uploads get their own application use case (`UploadFile`, §4), not a `SourceConnector` implementation.
+Every OAuth source (Gmail; Slack/Notion when this was written, since removed — see `specs/remove-slack-notion.md`) fits the same shape: OAuth credentials, a `SourceConnector.fetch_changes(credentials, cursor)` pulled on a timer by the background scheduler. A file upload is the opposite of that shape — push-based (the user acts once, right now), no OAuth, nothing to poll. Forcing it through `SourceConnector` would mean a connector whose `fetch_changes` does nothing (polled uselessly every scheduler tick for a source that never changes on its own) — a leaky abstraction. So uploads get their own application use case (`UploadFile`, §4), not a `SourceConnector` implementation.
 
 ### 2.1 But it still needs a `SourceConnection` row
 
 `documents.connection_id` is a `NOT NULL` foreign key to `source_connections` (`models.py`) — every document belongs to some connection, and that's worth keeping true rather than special-casing uploads with a nullable FK. So: **one `SourceConnection` per user, `source_type = FILE`, created lazily on that user's first upload** (`external_account = None`, `display_name = "Uploaded files"`), holding every file that user ever uploads — the same one-connection-to-many-documents shape Gmail already has, just never going through OAuth or the connect/callback flow.
 
-This means `/sources` (the connections list) shows an "Uploaded files" row alongside Gmail/Slack/Notion once a user has uploaded anything, for free, with no frontend change — `_to_response()`'s `display_name` fallback already handles a connection with `external_account = None` correctly *as long as `display_name` is set* (it is, here), so no gap there.
+This means `/sources` (the connections list) shows an "Uploaded files" row alongside Gmail once a user has uploaded anything, for free, with no frontend change — `_to_response()`'s `display_name` fallback already handles a connection with `external_account = None` correctly *as long as `display_name` is set* (it is, here), so no gap there.
 
 ### 2.2 Scheduler must skip `FILE` connections
 
@@ -56,7 +56,7 @@ This endpoint is deliberately generic (`/documents/{id}`, not `/sources/uploads/
 
 **Layout**: `{FINDR_UPLOAD_STORAGE_ROOT}/{user_id}/{uuid4}{original_extension}` — the UUID (not the original filename) is the on-disk name, avoiding path traversal from a hostile filename and collisions between two uploads named `notes.pdf`. The original filename is preserved separately (§4, `uploaded_files.original_filename`) for display and for the `Document.subject` field.
 
-**New table, not new `Document` fields**: file-specific metadata (original filename, MIME type, size, storage path) lives in a new `uploaded_files` table, one row per uploaded document, `document_id` as a foreign key to `documents.id` — *not* new nullable columns bolted onto `documents`/`Document`. This keeps `Document` (the domain entity every port/adapter already knows about — `DocumentRepository`, `SearchIndex`, the search router) completely unchanged; nothing about search, indexing, or the API response shape needs to know a document came from an upload versus Gmail. Same reasoning as why Slack's `external_id` encodes `"{channel_id}:{ts}"` instead of `Document` growing Slack-specific fields.
+**New table, not new `Document` fields**: file-specific metadata (original filename, MIME type, size, storage path) lives in a new `uploaded_files` table, one row per uploaded document, `document_id` as a foreign key to `documents.id` — *not* new nullable columns bolted onto `documents`/`Document`. This keeps `Document` (the domain entity every port/adapter already knows about — `DocumentRepository`, `SearchIndex`, the search router) completely unchanged; nothing about search, indexing, or the API response shape needs to know a document came from an upload versus Gmail. Same reasoning as why the Slack connector encoded `"{channel_id}:{ts}"` into `external_id` instead of `Document` growing Slack-specific fields (since removed — see `specs/remove-slack-notion.md`).
 
 ```python
 class UploadedFileModel(Base):

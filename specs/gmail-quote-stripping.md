@@ -17,7 +17,7 @@ This spec strips quoted content from `body_text` before it's stored/indexed, kee
 ### Out of scope
 - **Storing the full, unstripped body anywhere.** Not needed: the "open in Gmail" deep link (`_source_url` in `search_router.py`, already built) takes the user to the real message in Gmail's own UI, which already shows the full quoted thread natively. There is no reason to duplicate that content in Findr's own store just to preserve it.
 - **Perfect detection.** This is a heuristic, not a guaranteed-correct parser — see §3 and §5 for known failure modes. Best-effort is the deliberate target, not 100% accuracy.
-- Slack/Notion — Gmail only, consistent with the sibling spec's scoping.
+- Slack/Notion — Gmail only, consistent with the sibling spec's scoping. (Both connectors since removed — see `specs/remove-slack-notion.md`.)
 - Any change to `thread_id` capture — orthogonal, handled by `specs/gmail-thread-id.md`.
 
 ## 2. Detection method

@@ -1,6 +1,6 @@
 # findr
 
-Findr is a unified search platform: connect data sources (Gmail, Slack, Notion — Google Drive/WhatsApp planned) and search across all of them from one place. FastAPI backend (hexagonal/ports & adapters), Postgres as the system of record, Elasticsearch for search.
+Findr is a unified search platform: connect data sources (Gmail and uploaded files — Google Drive/WhatsApp planned) and search across all of them from one place. FastAPI backend (hexagonal/ports & adapters), Postgres as the system of record, Elasticsearch for search.
 
 See `specs/` for the design behind each feature (spec-driven development — every feature has a spec written and agreed before implementation).
 

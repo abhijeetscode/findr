@@ -46,7 +46,7 @@ class DocumentRepository(Protocol):
     def delete_many(self, connection_id: int, external_ids: list[str]) -> None: ...
 ```
 
-This is necessary because Elasticsearch's document `_id` is `documents.id` (§4) — a value that doesn't exist until *after* the Postgres write. The `Document` objects a connector produces (`GmailConnector`, `SlackConnector`, `NotionConnector`) all set `id=0` as a placeholder (see e.g. `gmail_connector.py`: `id=0,  # ignored by the repository on insert`) — that's fine for the insert itself, but `index_documents` needs the *real* id, not the placeholder, or every document in a batch would collide on `_id="0"` and overwrite each other in Elasticsearch. `document_repository_postgres.py`'s upsert statement adds `.returning(DocumentModel.id)` and assigns the result back onto each `Document` before returning the list — one extra value per statement, no extra round trip.
+This is necessary because Elasticsearch's document `_id` is `documents.id` (§4) — a value that doesn't exist until *after* the Postgres write. The `Document` objects a connector produces (`GmailConnector`; `SlackConnector` and `NotionConnector` at the time, since removed — see `specs/remove-slack-notion.md`) all set `id=0` as a placeholder (see e.g. `gmail_connector.py`: `id=0,  # ignored by the repository on insert`) — that's fine for the insert itself, but `index_documents` needs the *real* id, not the placeholder, or every document in a batch would collide on `_id="0"` and overwrite each other in Elasticsearch. `document_repository_postgres.py`'s upsert statement adds `.returning(DocumentModel.id)` and assigns the result back onto each `Document` before returning the list — one extra value per statement, no extra round trip.
 
 ## 3. Sync strategy: keeping Postgres and Elasticsearch consistent
 
@@ -125,7 +125,7 @@ One Elasticsearch index, `findr_documents` — not one index per tenant. Per-use
 
 `thread_id` is a **prerequisite from `specs/gmail-thread-id.md`** — Gmail's conversation-grouping key, `keyword` (not `text`) since it's an exact-match field, never full-text searched. Included here for the same reason as the Postgres column: free to add before the index exists, a mapping change afterward otherwise.
 
-`external_account` isn't in the design above — added during implementation alongside the `index_documents` signature change in §2, for the same reason: it's needed (by `search_router.py`'s Slack deep-link building, via `SearchHit.external_account`) but has no source to `JOIN` from in Elasticsearch, so it's denormalized onto each document like `source_type`.
+`external_account` isn't in the design above — added during implementation alongside the `index_documents` signature change in §2, for the same reason: it was needed by `search_router.py`'s Slack deep-link building, via `SearchHit.external_account` (Slack since removed — see `specs/remove-slack-notion.md`; the field stays, see that spec §3) but has no source to `JOIN` from in Elasticsearch, so it's denormalized onto each document like `source_type`.
 
 `delete_documents(connection_id, external_ids)` uses ES's delete-by-query filtered on `connection_id` + `external_id` terms — matching `DocumentRepository.delete_many`'s exact inputs, so the caller never needs to know an ES-internal `_id` to delete something.
 

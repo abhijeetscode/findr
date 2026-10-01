@@ -20,7 +20,7 @@ Replace SQLite — the adapter behind every persistence port in this app — wit
 
 ### Out of scope
 - Search itself — covered by `specs/elasticsearch-search.md`. This spec's `DocumentRepository` is still the system-of-record write path; it does not talk to Elasticsearch.
-- **Migrating existing local SQLite data.** Decided: fresh start. After cutover, reconnect Gmail/Slack/Notion and let the normal sync flow repopulate Postgres from scratch. This is still demo/dev-stage data, not production data worth writing a backfill script for.
+- **Migrating existing local SQLite data.** Decided: fresh start. After cutover, reconnect Gmail/Slack/Notion (Slack/Notion since removed — see `specs/remove-slack-notion.md`) and let the normal sync flow repopulate Postgres from scratch. This is still demo/dev-stage data, not production data worth writing a backfill script for.
 - Production hosting choice (managed Postgres provider, backups, HA) — not decided here; this spec only requires a `FINDR_DATABASE_URL` pointing at *some* reachable Postgres.
 - Any change to `ports/*` (no port signatures change in this spec — `SearchIndex`'s write methods are added in the sibling spec, not here).
 
@@ -82,7 +82,7 @@ All six are a SQLAlchemy dialect swap with **no query-logic changes**, except wh
 
 ## 7. Testing strategy
 
-**Application-layer tests are untouched.** `SyncSource`, `connect_gmail/slack/notion`, `register_and_login`, etc. test against ports via hand-written fakes (`FakeSourceConnectionRepository`, `FakeCredentialStore`, ...), never against a concrete SQLite adapter. Nothing here changes for them.
+**Application-layer tests are untouched.** `SyncSource`, `connect_gmail` (and, at the time, `connect_slack`/`connect_notion`, since removed — see `specs/remove-slack-notion.md`), `register_and_login`, etc. test against ports via hand-written fakes (`FakeSourceConnectionRepository`, `FakeCredentialStore`, ...), never against a concrete SQLite adapter. Nothing here changes for them.
 
 **Adapter-level tests (`tests/adapters/*`) run against a real, dockerized Postgres** — decided explicitly over mocking, since the entire point of an adapter test is verifying real SQL against the real engine (the `document_repository_postgres.py` `ON CONFLICT` rewrite above is exactly the kind of bug this class of test exists to catch).
 

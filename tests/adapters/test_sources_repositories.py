@@ -84,7 +84,7 @@ def test_source_connection_display_name_round_trip(db_session):
     db_session.commit()
     repo = SourceConnectionRepositoryPostgres(db_session)
 
-    connection = repo.create(user.id, SourceType.SLACK, "T1:U1", "Acme Corp (Ada)")
+    connection = repo.create(user.id, SourceType.GMAIL, "ada@acme.com", "Acme Corp (Ada)")
     db_session.commit()
     assert repo.get(connection.id, user.id).display_name == "Acme Corp (Ada)"
 

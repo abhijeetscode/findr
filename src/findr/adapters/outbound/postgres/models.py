@@ -74,7 +74,7 @@ class DocumentModel(Base):
     body_text: Mapped[str | None]
     sent_at: Mapped[datetime | None]
     # Gmail conversation-grouping key — see specs/gmail-thread-id.md. None
-    # for connectors that don't populate it (Slack/Notion, out of scope there).
+    # for sources without conversations (uploads).
     thread_id: Mapped[str | None] = mapped_column(index=True)
     created_at: Mapped[datetime]
 
