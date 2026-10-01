@@ -1,6 +1,6 @@
 # Spec: Background processing of uploads — OCR, tables and chunking with Unstructured
 
-Status: **Draft — not yet agreed, not implemented.**
+Status: **Implemented** (branch `feature/file-upload-semantic-search`). What changed during implementation is recorded in §13.
 Owner: findr
 Related: `specs/semantic-search.md` §12 (semantic search for uploaded files only; this spec builds on it and changes *how* an upload is embedded), `specs/file-upload.md` (the upload flow this makes asynchronous and whose text extractor it replaces), `specs/dockerize-app.md` (the Python 3.13 move that made `unstructured` installable).
 
@@ -201,23 +201,14 @@ class UploadedFileRepository(Protocol):
 
 Partitioning, OCR and embedding are **blocking, CPU-bound** calls. Run directly on the event loop, they would freeze the worker, including its connection to Redis. So the task hands the whole `ProcessUpload.execute(upload_id)` call to a thread with `asyncio.to_thread`. The heavy libraries (onnxruntime, torch, tesseract) do most of their work outside Python's GIL.
 
-**Worker count and concurrency are configurable, defaulting to one upload at a time:**
-
-| Setting | Default | Meaning | Taskiq flag |
-|---|---|---|---|
-| `FINDR_WORKER_PROCESSES` | `1` | Worker processes per worker container. Each process loads its own models (~3–4GB while processing). | `--workers` |
-| `FINDR_WORKER_CONCURRENCY` | `1` | Uploads processed at once *inside* each process: that many asyncio tasks, each handing its job to a thread (`asyncio.to_thread`). Threads share the process's loaded models, but each job adds its own working memory (page images, OCR buffers, chunk embeddings). | `--max-async-tasks` |
-
-- **Total uploads processed at once** = worker containers × `FINDR_WORKER_PROCESSES` × `FINDR_WORKER_CONCURRENCY`. More containers come from `docker compose up --scale worker=N`.
-- **Why the defaults are 1:** the jobs are CPU-bound. On CPU, one job already uses nearly all cores, so extra concurrency mostly splits the same CPU between jobs, while memory grows with each one (§10). Raising `FINDR_WORKER_CONCURRENCY` pays off when the worker has a GPU, or when the work becomes mostly waiting (e.g. a hosted OCR or embedding API). Raising processes or containers pays off when the machine has spare memory and cores.
-- **Validation:** both must be integers ≥ 1; anything else fails worker startup.
+**One upload at a time per worker: one process, one job, fixed.** The jobs are CPU-bound. On CPU, one job already uses nearly all cores, so running more jobs at once mostly splits the same CPU between them, while memory grows with each (~3–4GB per worker process; §10). So neither the process count nor the concurrency is configurable for now; both are fixed at 1 in the worker's start command. If throughput ever needs to grow, run more worker containers (`docker compose up -d --scale worker=N`, memory permitting): each joins the same Redis consumer group, and the Postgres claim (§5.3) keeps them from processing the same upload twice. Making concurrency configurable is a follow-up for when the work stops being CPU-bound (a GPU, or hosted OCR/embedding APIs; §12).
 
 **Consumer settings** (the `RedisStreamBroker` from `taskiq-redis`, checked against its source):
 
 | Setting | Value | Why |
 |---|---|---|
-| `xread_count` | `FINDR_WORKER_CONCURRENCY` | The number of messages fetched per read. The library default of 100 would let one busy worker hold up to 100 jobs while processing only one, starving the other workers; and if it crashed, all of them would wait out the redelivery timeout. |
-| `--max-prefetch` | `FINDR_WORKER_CONCURRENCY` | Same reason, at the Taskiq level: a process never holds more messages than it can run. |
+| `xread_count` | `1` | The number of messages fetched per read. The library default of 100 would let one busy worker hold up to 100 jobs while processing only one, starving the other workers; and if it crashed, all of them would wait out the redelivery timeout. |
+| `--max-prefetch` | `1` | Same reason, at the Taskiq level: a process never holds more messages than it can run. |
 | `idle_timeout` | 30 minutes | How long an unacknowledged message waits before Redis redelivers it (`XAUTOCLAIM`) to another worker. The library default is 10 minutes, shorter than a long OCR job, which would trigger pointless redeliveries. 30 minutes matches the "stale `processing`" bound (§7). |
 | `--ack-type` | `when_executed` | Acknowledge only after the task has run, so a crash mid-job leaves the message to be redelivered. Set explicitly rather than relying on Taskiq's default. |
 | `maxlen` | ~10,000 | Trims acknowledged messages from the stream (§10). |
@@ -450,10 +441,8 @@ A job can get stuck because the enqueue failed after the commit, Redis lost the 
 
   The API and worker depend on it.
 - **Stream trimming:** Redis Streams keep acknowledged messages until they're trimmed. The broker is configured with a maximum stream length (approximate `MAXLEN`, e.g. 10,000 entries) so old messages don't pile up forever. The exact `taskiq-redis` option is confirmed during implementation.
-- **New `worker` service:** the same image, command `taskiq worker <broker module>:broker --workers ${FINDR_WORKER_PROCESSES:-1} --max-async-tasks ${FINDR_WORKER_CONCURRENCY:-1} --max-prefetch ${FINDR_WORKER_CONCURRENCY:-1} --ack-type when_executed`. Docker Compose fills in the variables from `.env`, defaulting to 1. The broker module reads `FINDR_WORKER_CONCURRENCY` too, for `xread_count`. Mounts `findr_uploads_data` (to read originals) and `findr_model_cache` (the embedding model plus `unstructured`'s layout and table models from Hugging Face, so they download once). Depends on postgres, elasticsearch and redis.
-- **New settings**, all added to `.env.example`:
-  - `FINDR_REDIS_URL`, default `redis://localhost:6379/0`; set to `redis://redis:6379/0` in `docker-compose.yml`;
-  - `FINDR_WORKER_PROCESSES` and `FINDR_WORKER_CONCURRENCY`, both default `1` (§5.2).
+- **New `worker` service:** the same image, command `taskiq worker <broker module>:broker --workers 1 --max-async-tasks 1 --max-prefetch 1 --ack-type when_executed`. Mounts `findr_uploads_data` (to read originals) and `findr_model_cache` (the embedding model plus `unstructured`'s layout and table models from Hugging Face, so they download once). Depends on postgres, elasticsearch and redis.
+- **New setting:** `FINDR_REDIS_URL`, default `redis://localhost:6379/0`; set to `redis://redis:6379/0` in `docker-compose.yml`. Added to `.env.example`.
 
 **Memory:**
 
@@ -462,7 +451,7 @@ A job can get stuck because the enqueue failed after the commit, Redis lost the 
 | Redis | **~10MB empty; ~17MB with 10,000 queued messages** (measured: ~190 bytes per message) |
 | Elasticsearch | ~1GB |
 | API (embedding model, for query embedding) | ~0.7GB |
-| Worker (layout/table/OCR models + embedding model) | ~3–4GB while processing, **per worker process at the default concurrency of 1**. Each extra process adds about the same again; each extra concurrent job adds its working memory on top. |
+| Worker (layout/table/OCR models + embedding model) | ~3–4GB while processing (one process, one job). Each extra worker container from `--scale` adds about the same again. |
 | **Total** | **~5–6GB** |
 
 Docker Desktop on this machine has 7.7GB. That fits, but not by much. If the worker is killed for running out of memory, the job is retried (§5.3) and eventually marked `failed`; raising Docker Desktop's memory limit is the fix.
@@ -495,7 +484,6 @@ Docker Desktop on this machine has 7.7GB. That fits, but not by much. If the wor
   - table chunks are indexed and matchable;
   - chunk metadata is stored in the nested mapping with explicit types, and `inner_hits` returns it.
   - **The test that proves chunking works (real model):** a long upload whose relevant passage sits well past the first 512 tokens. A paraphrased query finds it; the single-embedding approach couldn't.
-- **Worker settings:** `FINDR_WORKER_PROCESSES`/`FINDR_WORKER_CONCURRENCY` default to 1 and reject values below 1; the broker's `xread_count` follows the concurrency setting.
 - **Queue:** Taskiq's in-memory broker in tests. The router test enqueues, the task runs inline, and `GET /uploads/{id}` shows `ready`.
 - **Router (end to end):**
   - `202` and a `pending` status on upload;
@@ -525,3 +513,52 @@ Docker Desktop on this machine has 7.7GB. That fits, but not by much. If the wor
 - Backfilling chunks for pre-change uploads by re-parsing their stored originals.
 - Moving Gmail sync onto the same worker/queue, instead of the API process's scheduler.
 - Separate, slimmer images for the API and the worker (the API doesn't need OCR packages).
+- Configurable worker processes/concurrency, once the work is no longer CPU-bound (a GPU, or hosted OCR/embedding APIs).
+- Language detection for `ChunkMetadata.languages` is unreliable on short or repetitive text: a test string was labelled `cat` (Catalan). OCR is English-only (§1), so this only affects the metadata field, not parsing.
+
+## 13. Implementation notes & deviations
+
+**Corrections to §2** (found running the real stack as the non-root container user):
+- **`unstructured` does download a model at runtime:** the spaCy model `en_core_web_sm`, which it uses for text classification. §2 said no runtime downloads were needed. `unstructured` installs the model into `site-packages` on first use, which the container's `findr` user can't write, so DOCX and Markdown uploads failed. It didn't show up earlier because the probes ran with a writable environment and never hit that code path. **Fix:** `en-core-web-sm==3.8.0` is a declared dependency, sourced from the same wheel URL `unstructured` pins; the lock records the same SHA-256 (`1932429d…`). A test guards it.
+- **`torchvision` must come from the CPU-only index too.** `unstructured-inference` pulls it in. A PyPI `torchvision` next to the `+cpu` `torch` fails at import: `operator torchvision::nms does not exist`. It's declared directly so `[tool.uv.sources]` can point it at `pytorch-cpu` on Linux (uv sources only apply to direct dependencies).
+- **Container environment:**
+  - `NUMBA_CACHE_DIR=/tmp/numba-cache`: `unstructured` uses Numba, which otherwise tries to write its cache into `site-packages`;
+  - the `findr` user now gets a home directory (`useradd --create-home`) for fontconfig/matplotlib caches.
+
+**A risk found and closed: tables can disappear silently.** If `unstructured`'s table-structure model can't load during a parse (a failed download, or a cache the worker can't read), `partition_pdf` doesn't raise. It drops the table's content from the document. This was reproduced when a test run as root left root-owned model files in the shared cache volume.
+- **Fix:** the worker calls `UnstructuredDocumentParser.warm_up()` at startup. It loads the layout model, the table agent and the spaCy model, so any problem stops the worker from starting instead of silently losing tables.
+- **Bonus:** the first upload no longer waits for model downloads. Worker startup takes ~10s once models are cached.
+
+**Other deviations from the text above:**
+- **New `UnitOfWork` port** (`ports/unit_of_work.py`, Postgres adapter `UnitOfWorkPostgres`). `ProcessUpload` has to commit part-way: its claim must be visible, and no transaction may stay open during a minutes-long OCR run. `UploadFile` commits before enqueuing, and `RequeueStaleUploads` before re-enqueuing. Existing use cases still leave commits to their routers.
+- **`UploadedFileRepository`** has `lock` (row lock for the final step and for delete) and `mark_retry` (returns the new attempt count). `claim` takes the stale threshold as an argument, so the use case owns the timing rules.
+- **Retry backoff is a fixed 30-second delay** before re-enqueuing, not an increasing one. Infrastructure errors tend to be all-or-nothing, and the 3-attempt cap plus the sweep bound the total.
+- **The stale sweep counts a stale `processing` upload as a failed attempt.** Otherwise a file that kills the worker every time (e.g. out of memory) would be retried forever.
+- **Enqueuing from sync code:** the `UploadQueue` port is synchronous. `TaskiqUploadQueue` hands `kiq()` to the API's event loop with `asyncio.run_coroutine_threadsafe`, which works from FastAPI's threadpool and APScheduler's thread. The upload endpoint therefore runs the use case in a thread; calling it on the event loop itself would deadlock.
+- **Broker details:** queue `findr_uploads`, consumer group `findr_workers`, `xread_count=1`, `idle_timeout` 30 min, approximate `maxlen` 10,000. Setting `FINDR_REDIS_URL=memory://` gives Taskiq's in-memory broker, used only by tests.
+- **Parse-error classification:** partition errors become `ExtractionFailed` (failed, no retry), **except `OSError`**, which is treated as an environment problem and retried.
+- **Chunk HTML:** chunking normalises a Markdown table's header cells from `<th>` to `<td>`; rows and columns are intact.
+- **No migration tool:** `uploaded_files` changed shape. The table existed only on this branch and was empty in both the dev and test databases, so it was dropped and recreated by `create_all` rather than altered.
+
+**Measured on the running stack:**
+
+| Measure | Value |
+|---|---|
+| Image size (API and worker share it) | 3.67GB, up from 2.07GB |
+| Idle memory | API ~690MB; worker ~670MB; Redis ~12MB |
+| Worker peak while processing | 1.6–1.7GB for small documents (under the 3–4GB estimate; large scanned PDFs weren't measured) |
+| Processing time | Scanned 1-page PDF ~8s; 2-page text PDF with a table ~19s; DOCX and Markdown a few seconds |
+| PDF tables | Detected as their own chunk with correct pages, but header structure imperfect (`<td>\| Seats</td>`), as §2 predicted |
+
+**Similarity floor at chunk granularity:** re-checked with the real model on the test documents.
+- Relevant paraphrase → chunk pairs scored **0.45–0.63**, so the 0.4 floor keeps them.
+- Unrelated queries mostly scored ≤0.31, **but the one-word query "new" reached 0.45** against a table chunk. At 0.4, vague one-word queries can pull in a loosely related upload. Accepted: RRF ranks it alongside keyword results rather than above them.
+- **Note for local setups:** a `.env` that sets `FINDR_SEMANTIC_MIN_SIMILARITY` higher (0.7 was found in the dev `.env`) effectively disables semantic search, because relevant chunks score well under 0.7.
+
+**End-to-end check (Docker):** scanned PDF, text PDF with a table, DOCX with a table and a long Markdown file all went pending → processing → ready. With the 0.4 floor, paraphrased queries found:
+- the OCR'd memo, for "building rental agreement ending";
+- the DOCX table, for "how much does the business tier cost";
+- a page-2 passage;
+- the last section of the handbook.
+
+Semantic-only hits showed the matching chunk as their snippet. All 13 parser tests, including OCR and PDF tables, pass inside the image.

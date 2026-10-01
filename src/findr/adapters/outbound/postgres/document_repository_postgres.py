@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session as DbSession
 
-from findr.adapters.outbound.postgres.models import DocumentModel
+from findr.adapters.outbound.postgres.models import DocumentChunkModel, DocumentModel
 from findr.adapters.outbound.system_clock import SystemClock
-from findr.domain.entities import Document
+from findr.domain.entities import ChunkMetadata, Document, DocumentChunk
+from findr.domain.value_objects import ChunkKind
 from findr.ports.clock import Clock
 
 
@@ -19,6 +20,10 @@ class DocumentRepositoryPostgres:
     doesn't exist until after this write, so SyncSource needs it back to
     index correctly (the id=0 placeholder every connector sets would
     otherwise collide every document in a batch onto the same ES _id).
+
+    Also owns the document_chunks table (specs/upload-chunking.md §6.4): a
+    document's chunks are replaced on upsert only when it has chunks, so
+    sources that don't chunk (Gmail) never touch the table.
     """
 
     def __init__(self, db: DbSession, clock: Clock | None = None) -> None:
@@ -50,12 +55,19 @@ class DocumentRepositoryPostgres:
                 },
             ).returning(DocumentModel.id)
             doc.id = self._db.execute(stmt).scalar_one()
+            if doc.chunks:
+                self._replace_chunks(doc.id, doc.chunks)
         self._db.flush()
         return documents
 
     def delete_many(self, connection_id: int, external_ids: list[str]) -> None:
         if not external_ids:
             return
+        doomed = select(DocumentModel.id).where(
+            DocumentModel.connection_id == connection_id,
+            DocumentModel.external_id.in_(external_ids),
+        )
+        self._db.execute(delete(DocumentChunkModel).where(DocumentChunkModel.document_id.in_(doomed)))
         self._db.execute(
             delete(DocumentModel).where(
                 DocumentModel.connection_id == connection_id,
@@ -68,11 +80,94 @@ class DocumentRepositoryPostgres:
         row = self._db.get(DocumentModel, document_id)
         if row is None or row.user_id != user_id:
             return None
-        return _to_domain(row)
+        document = _to_domain(row)
+        document.chunks = load_chunks(self._db, [document_id]).get(document_id, [])
+        return document
 
     def delete_by_id(self, document_id: int) -> None:
+        self._db.execute(
+            delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
+        )
         self._db.execute(delete(DocumentModel).where(DocumentModel.id == document_id))
         self._db.flush()
+
+    def _replace_chunks(self, document_id: int, chunks: list[DocumentChunk]) -> None:
+        self._db.execute(
+            delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
+        )
+        self._db.add_all(
+            DocumentChunkModel(
+                document_id=document_id,
+                chunk_index=chunk.metadata.chunk_index,
+                kind=chunk.kind.value,
+                text=chunk.text,
+                table_html=chunk.table_html,
+                document_version=chunk.metadata.document_version,
+                content_sha256=chunk.metadata.content_sha256,
+                metadata_json=_metadata_to_json(chunk.metadata),
+            )
+            for chunk in chunks
+        )
+
+
+def load_chunks(db: DbSession, document_ids: list[int]) -> dict[int, list[DocumentChunk]]:
+    """Chunks for many documents in one query, each list in chunk order.
+    Public so scripts/reindex_search.py can rebuild chunk vectors from
+    Postgres without re-parsing any files."""
+    if not document_ids:
+        return {}
+    rows = db.execute(
+        select(DocumentChunkModel)
+        .where(DocumentChunkModel.document_id.in_(document_ids))
+        .order_by(DocumentChunkModel.document_id, DocumentChunkModel.chunk_index)
+    ).scalars()
+    by_document: dict[int, list[DocumentChunk]] = {}
+    for row in rows:
+        by_document.setdefault(row.document_id, []).append(_chunk_to_domain(row))
+    return by_document
+
+
+# document_version and content_sha256 are real columns; everything else in
+# ChunkMetadata lives in metadata_json.
+_JSON_FIELDS = (
+    "chunk_index",
+    "filename",
+    "mime_type",
+    "page_start",
+    "page_end",
+    "section_title",
+    "element_types",
+    "languages",
+    "is_continuation",
+    "parser_version",
+)
+
+
+def _metadata_to_json(metadata: ChunkMetadata) -> dict:
+    return {name: getattr(metadata, name) for name in _JSON_FIELDS}
+
+
+def _chunk_to_domain(row: DocumentChunkModel) -> DocumentChunk:
+    data = row.metadata_json
+    return DocumentChunk(
+        text=row.text,
+        kind=ChunkKind(row.kind),
+        table_html=row.table_html,
+        metadata=ChunkMetadata(
+            chunk_index=row.chunk_index,
+            document_version=row.document_version,
+            content_sha256=row.content_sha256,
+            filename=data["filename"],
+            mime_type=data["mime_type"],
+            page_start=data.get("page_start"),
+            page_end=data.get("page_end"),
+            section_title=data.get("section_title"),
+            element_types=list(data.get("element_types", [])),
+            languages=list(data.get("languages", [])),
+            is_continuation=bool(data.get("is_continuation", False)),
+            parser_version=data["parser_version"],
+        ),
+    )
 
 
 def _to_domain(row: DocumentModel) -> Document:

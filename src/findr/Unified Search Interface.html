@@ -185,6 +185,15 @@ a.result-card:hover {
   font-size: 12px; color: #8E8B80; padding: 2px 6px; border-radius: 6px;
 }
 .delete-doc-btn:hover { color: #C1502E; background: #FBEDE7; }
+.uploads-status { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 4px; }
+.upload-row {
+  display: flex; align-items: center; gap: 10px; font-size: 13px; color: #5B5748;
+  background: #fff; border: 1px solid #ECE8DC; border-radius: 10px; padding: 8px 12px;
+}
+.upload-row .upload-name { font-weight: 600; color: #1B1C20; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-row .upload-state { color: #8E8B80; }
+.upload-row.failed .upload-state { color: #B3261E; }
+.upload-row .delete-doc-btn { flex-shrink: 0; }
 .resync-btn.spinning { animation: findr-spin 0.8s linear infinite; display: inline-block; }
 @keyframes findr-spin { to { transform: rotate(360deg); } }
 
@@ -363,6 +372,10 @@ a.result-card:hover {
       </button>
     </div>
 
+    <!-- Uploads still processing in the background, or failed — see
+         specs/upload-chunking.md §8.2. Ready uploads drop off the list. -->
+    <div class="uploads-status" id="uploads-status"></div>
+
     <!-- CONTENT: results + filters -->
     <div class="content-row">
 
@@ -539,6 +552,7 @@ a.result-card:hover {
     avatar.textContent = initials(user.email);
     avatar.title = user.email + " — click to log out";
     loadSources();
+    loadUploads();
     renderResults(null);
   }
 
@@ -784,8 +798,9 @@ a.result-card:hover {
     var button = $("upload-btn");
     button.disabled = true;
     var failures = [];
-    // Sequential, one request per file — each upload embeds its text
-    // server-side, so there's no benefit to firing them in parallel.
+    // Sequential, one request per file. Each request only stores the file
+    // and queues it (202); processing happens on the background worker and
+    // shows up in the uploads list below.
     files.reduce(function (chain, file, i) {
       return chain.then(function () {
         button.lastChild.textContent = " Uploading " + (i + 1) + "/" + files.length + "…";
@@ -804,10 +819,59 @@ a.result-card:hover {
       button.disabled = false;
       button.lastChild.textContent = " Upload files";
       if (failures.length) window.alert("Some files couldn't be uploaded:\n\n" + failures.join("\n"));
-      loadSources();
-      refreshSearch();
+      loadUploads();
     });
   });
+
+  // Polls GET /uploads while anything is still pending/processing, then
+  // stops. When an upload turns ready, the sources list and the current
+  // search refresh so it shows up.
+  var UPLOAD_POLL_MS = 3000;
+  var uploadPollTimer = null;
+  var inProgressUploadIds = {};
+
+  function loadUploads() {
+    window.clearTimeout(uploadPollTimer);
+    api("/uploads").then(function (res) {
+      return res.ok ? res.json() : null;
+    }).then(function (uploads) {
+      if (!uploads) return;
+      var stillRunning = {};
+      var becameReady = false;
+      uploads.forEach(function (u) {
+        if (u.status === "pending" || u.status === "processing") stillRunning[u.upload_id] = true;
+        else if (inProgressUploadIds[u.upload_id] && u.status === "ready") becameReady = true;
+      });
+      inProgressUploadIds = stillRunning;
+      renderUploads(uploads.filter(function (u) { return u.status !== "ready"; }));
+      if (becameReady) { loadSources(); refreshSearch(); }
+      if (Object.keys(stillRunning).length) {
+        uploadPollTimer = window.setTimeout(loadUploads, UPLOAD_POLL_MS);
+      }
+    }).catch(function () {
+      uploadPollTimer = window.setTimeout(loadUploads, UPLOAD_POLL_MS * 3);
+    });
+  }
+
+  function renderUploads(uploads) {
+    var container = $("uploads-status");
+    container.innerHTML = uploads.map(function (u) {
+      var failed = u.status === "failed";
+      var state = failed ? "Failed: " + (u.error || "unknown error") : "Processing…";
+      return (
+        '<div class="upload-row' + (failed ? ' failed' : '') + '">' +
+          '<span class="upload-name" title="' + escapeHtml(u.filename) + '">' + escapeHtml(u.filename) + '</span>' +
+          '<span class="upload-state">' + escapeHtml(state) + '</span>' +
+          '<button type="button" class="delete-doc-btn" data-upload-id="' + u.upload_id + '" aria-label="Remove ' + escapeHtml(u.filename) + '">Remove</button>' +
+        '</div>'
+      );
+    }).join("");
+    Array.prototype.forEach.call(container.querySelectorAll("[data-upload-id]"), function (btn) {
+      btn.addEventListener("click", function () {
+        api("/uploads/" + btn.getAttribute("data-upload-id"), { method: "DELETE" }).then(loadUploads);
+      });
+    });
+  }
 
   function runSearch(query) {
     api("/search?q=" + encodeURIComponent(query)).then(function (res) {

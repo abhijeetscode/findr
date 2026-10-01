@@ -6,9 +6,9 @@ from findr.ports.uploaded_file_repository import UploadedFileRepository
 
 
 class DeleteDocument:
-    """Removes one document from Postgres and the search index, plus its
-    stored original if it was an upload. Generic over source type — see
-    specs/file-upload.md §2.3."""
+    """Removes one document from Postgres (with its chunks) and the search
+    index, plus its upload record and stored original if it came from an
+    upload. Generic over source type — see specs/file-upload.md §2.3."""
 
     def __init__(
         self,
@@ -30,7 +30,7 @@ class DeleteDocument:
         uploaded_file = self._uploaded_file_repo.get_by_document_id(document_id)
         # uploaded_files.document_id references documents.id — child row first.
         if uploaded_file is not None:
-            self._uploaded_file_repo.delete_by_document_id(document_id)
+            self._uploaded_file_repo.delete(uploaded_file.id)
         self._document_repo.delete_by_id(document_id)
         self._search_index.delete_documents(document.connection_id, [document.external_id])
 

@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -79,13 +80,16 @@ class DocumentModel(Base):
 
 
 class UploadedFileModel(Base):
-    """File-specific metadata for an uploaded document — its own table rather
-    than nullable columns on documents, see specs/file-upload.md §3."""
+    """An upload and its background-processing status — its own table rather
+    than nullable columns on documents (specs/file-upload.md §3). The
+    Document only exists once processing succeeds, so document_id is
+    nullable (specs/upload-chunking.md §6.4)."""
 
     __tablename__ = "uploaded_files"
+    __table_args__ = (Index("ix_uploaded_files_user_sha256", "user_id", "content_sha256"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    document_id: Mapped[int] = mapped_column(
+    document_id: Mapped[int | None] = mapped_column(
         ForeignKey("documents.id"), unique=True, index=True
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
@@ -93,4 +97,31 @@ class UploadedFileModel(Base):
     mime_type: Mapped[str]
     file_size_bytes: Mapped[int]
     storage_path: Mapped[str]
+    content_sha256: Mapped[str]
+    document_version: Mapped[int] = mapped_column(default=1)
+    status: Mapped[str] = mapped_column(index=True)
+    error: Mapped[str | None]
+    attempts: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime]
+    updated_at: Mapped[datetime]
+
+
+class DocumentChunkModel(Base):
+    """Chunks of a document for semantic search — the source of truth that
+    scripts/reindex_search.py rebuilds Elasticsearch's nested chunk vectors
+    from, without re-running OCR. See specs/upload-chunking.md §6.4."""
+
+    __tablename__ = "document_chunks"
+    __table_args__ = (UniqueConstraint("document_id", "chunk_index"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True)
+    chunk_index: Mapped[int]
+    kind: Mapped[str]
+    text: Mapped[str]
+    table_html: Mapped[str | None]
+    # Real columns because future duplicate/version handling filters on them.
+    document_version: Mapped[int]
+    content_sha256: Mapped[str] = mapped_column(index=True)
+    # The remaining ChunkMetadata fields, read back whole.
+    metadata_json: Mapped[dict] = mapped_column(JSONB)

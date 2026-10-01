@@ -10,6 +10,7 @@ from findr.adapters.inbound.http.deps import (
     get_file_storage,
     get_search_index,
     get_settings,
+    get_upload_queue,
 )
 from findr.adapters.outbound.connector_factory import connector_for, oauth_provider_for
 from findr.adapters.outbound.crypto.token_cipher import TokenCipher
@@ -18,17 +19,15 @@ from findr.adapters.outbound.postgres.credential_store_postgres import Credentia
 from findr.adapters.outbound.postgres.document_repository_postgres import (
     DocumentRepositoryPostgres,
 )
-from findr.adapters.outbound.files.file_text_extractor import (
-    FileTextExtractor,
-    resolve_mime_type,
-)
 from findr.adapters.outbound.files.local_file_storage import LocalFileStorage
+from findr.adapters.outbound.files.mime_types import SUPPORTED_MIME_TYPES, resolve_mime_type
 from findr.adapters.outbound.postgres.oauth_state_repository_postgres import (
     OAuthStateRepositoryPostgres,
 )
 from findr.adapters.outbound.postgres.source_connection_repo_postgres import (
     SourceConnectionRepositoryPostgres,
 )
+from findr.adapters.outbound.postgres.unit_of_work_postgres import UnitOfWorkPostgres
 from findr.adapters.outbound.postgres.uploaded_file_repository_postgres import (
     UploadedFileRepositoryPostgres,
 )
@@ -50,6 +49,7 @@ from findr.domain.exceptions import (
     UnsupportedFileType,
 )
 from findr.domain.value_objects import ConnectionStatus, SourceType
+from findr.ports.upload_queue import UploadQueue
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
@@ -94,36 +94,37 @@ def list_sources(
 
 
 class UploadResponse(BaseModel):
-    document_id: int
-    connection_id: int
+    upload_id: int
     filename: str
     mime_type: str
     file_size_bytes: int
+    status: str
 
 
-@router.post("/upload", status_code=status.HTTP_201_CREATED, response_model=UploadResponse)
+@router.post("/upload", status_code=status.HTTP_202_ACCEPTED, response_model=UploadResponse)
 async def upload_file(
     file: UploadFile,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
-    search_index: ElasticsearchIndex = Depends(get_search_index),
     file_storage: LocalFileStorage = Depends(get_file_storage),
+    upload_queue: UploadQueue = Depends(get_upload_queue),
 ) -> UploadResponse:
-    """Uploads one file as a searchable document, into the user's
-    lazily-created "Uploaded files" connection — see specs/file-upload.md."""
+    """Stores one file and queues it for background processing (OCR,
+    tables, chunking, indexing) — see specs/upload-chunking.md. Track it
+    with GET /uploads/{upload_id}."""
     filename = file.filename or "untitled"
     content = await file.read()
     use_case = UploadFileUseCase(
-        FileTextExtractor(),
+        SUPPORTED_MIME_TYPES,
         file_storage,
-        SourceConnectionRepositoryPostgres(db),
-        DocumentRepositoryPostgres(db),
         UploadedFileRepositoryPostgres(db),
-        search_index,
+        UnitOfWorkPostgres(db),
+        upload_queue,
     )
     try:
-        # Extraction and embedding are CPU-bound; keep them off the event loop.
-        document, uploaded = await run_in_threadpool(
+        # In a thread: the queue adapter hands its coroutine to this event
+        # loop and waits for it, which would deadlock on the loop itself.
+        upload = await run_in_threadpool(
             use_case.execute,
             user.id,
             filename,
@@ -135,13 +136,12 @@ async def upload_file(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
-    db.commit()
     return UploadResponse(
-        document_id=document.id,
-        connection_id=document.connection_id,
-        filename=uploaded.original_filename,
-        mime_type=uploaded.mime_type,
-        file_size_bytes=uploaded.file_size_bytes,
+        upload_id=upload.id,
+        filename=upload.original_filename,
+        mime_type=upload.mime_type,
+        file_size_bytes=upload.file_size_bytes,
+        status=upload.status.value,
     )
 
 

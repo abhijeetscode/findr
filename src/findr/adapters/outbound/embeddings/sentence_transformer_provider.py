@@ -51,10 +51,22 @@ class SentenceTransformerEmbeddingProvider:
         if "query" not in self._model.prompts:
             raise ValueError(f"Embedding model {model_name!r} has no 'query' prompt configured")
 
-    def embed_document(self, text: str) -> list[float]:
-        return self._model.encode(text, normalize_embeddings=True).tolist()
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        # One batched encode: much faster than per-text calls for the many
+        # chunks of one file (specs/upload-chunking.md §4.3).
+        return self._model.encode(texts, normalize_embeddings=True).tolist()
 
     def embed_query(self, text: str) -> list[float]:
         # prompt_name="query" applies the model's bundled retrieval
         # instruction; documents are encoded plain (asymmetric model).
         return self._model.encode(text, prompt_name="query", normalize_embeddings=True).tolist()
+
+
+def create_embedding_provider(settings) -> SentenceTransformerEmbeddingProvider:
+    """One per process — shared by the API, the upload worker and the
+    reindex script."""
+    return SentenceTransformerEmbeddingProvider(
+        settings.embedding_model, settings.embedding_max_seq_length
+    )

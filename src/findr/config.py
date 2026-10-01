@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     embedding_max_seq_length: int = Field(
         default=512, validation_alias="FINDR_EMBEDDING_MAX_SEQ_LENGTH"
     )
+    # Queue for background upload processing (specs/upload-chunking.md §5).
+    # "memory://" gives Taskiq's in-process broker — for tests only.
+    redis_url: str = Field(default="redis://localhost:6379/0", validation_alias="FINDR_REDIS_URL")
+
     # Cosine-similarity floor for the kNN leg of hybrid search — see
     # search_index_elasticsearch.DEFAULT_MIN_SIMILARITY.
     semantic_min_similarity: float = Field(

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from findr.domain.value_objects import ConnectionStatus, SourceType
+from findr.domain.value_objects import ChunkKind, ConnectionStatus, SourceType, UploadStatus
 
 
 @dataclass
@@ -35,6 +35,34 @@ class SourceConnection:
 
 
 @dataclass
+class ChunkMetadata:
+    """Where each field comes from: specs/upload-chunking.md §6.3."""
+
+    chunk_index: int
+    document_version: int
+    content_sha256: str
+    filename: str
+    mime_type: str
+    page_start: int | None
+    page_end: int | None
+    section_title: str | None
+    element_types: list[str]
+    languages: list[str]
+    is_continuation: bool
+    parser_version: str
+
+
+@dataclass
+class DocumentChunk:
+    # Plain text: what gets embedded and shown as a snippet.
+    text: str
+    kind: ChunkKind
+    # The table's structure as HTML, for TABLE chunks; None for TEXT.
+    table_html: str | None
+    metadata: ChunkMetadata
+
+
+@dataclass
 class Document:
     id: int
     user_id: int
@@ -50,22 +78,45 @@ class Document:
     # connectors that don't populate it yet (Slack/Notion — out of scope,
     # see specs/gmail-thread-id.md).
     thread_id: str | None = None
+    # Passages used for semantic search. Empty for documents that aren't
+    # chunked — every source except uploads (specs/semantic-search.md §12,
+    # specs/upload-chunking.md §4.2).
+    chunks: list[DocumentChunk] = field(default_factory=list)
 
 
 @dataclass
 class UploadedFile:
-    """File-specific metadata for a Document that came from an upload — kept
-    out of Document itself so nothing on the search/indexing path needs to
-    know where a document came from. See specs/file-upload.md §3."""
+    """An upload and its progress through background processing. File-
+    specific metadata stays here rather than on Document, so nothing on the
+    search path needs to know where a document came from. See
+    specs/file-upload.md §3 and specs/upload-chunking.md §3."""
 
     id: int
-    document_id: int
     user_id: int
     original_filename: str
     mime_type: str
     file_size_bytes: int
     storage_path: str
+    content_sha256: str
+    document_version: int
+    status: UploadStatus
+    # Set once processing succeeds; None while pending/processing/failed.
+    document_id: int | None
+    # User-facing reason, for FAILED uploads.
+    error: str | None
+    attempts: int
     created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class ParsedDocument:
+    """What a DocumentParser produces from one file."""
+
+    # Full text: stored as body_text, used for keyword search and highlights.
+    text: str
+    # In document order; never empty.
+    chunks: list[DocumentChunk]
 
 
 @dataclass

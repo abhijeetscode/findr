@@ -76,3 +76,36 @@ def test_run_sync_tick_skips_uploaded_files_connections(
     assert unchanged.status == ConnectionStatus.ACTIVE
     assert unchanged.last_error is None
     assert unchanged.last_synced_at is None
+
+
+def test_stale_upload_sweep_requeues_lost_uploads(db_session_factory, upload_queue):
+    from datetime import timedelta
+
+    from findr.adapters.outbound.postgres.uploaded_file_repository_postgres import (
+        UploadedFileRepositoryPostgres,
+    )
+    from findr.adapters.outbound.scheduler.sync_scheduler import _run_stale_upload_sweep
+    from findr.adapters.outbound.system_clock import SystemClock
+
+    class PastClock:
+        def now(self):
+            return SystemClock().now() - timedelta(hours=1)
+
+    db = db_session_factory()
+    user = UserRepositoryPostgres(db).create("a@example.com", "hash")
+    # Created an hour ago and never picked up — its message was lost.
+    lost = UploadedFileRepositoryPostgres(db, clock=PastClock()).create(
+        user_id=user.id,
+        original_filename="lost.txt",
+        mime_type="text/plain",
+        file_size_bytes=4,
+        storage_path=f"{user.id}/lost.txt",
+        content_sha256="a" * 64,
+        document_version=1,
+    )
+    db.commit()
+    db.close()
+
+    _run_stale_upload_sweep(db_session_factory, upload_queue)
+
+    assert upload_queue.enqueued == [lost.id]

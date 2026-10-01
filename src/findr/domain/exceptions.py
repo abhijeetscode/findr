@@ -41,3 +41,7 @@ class ExtractionFailed(DomainError):
     """Raised by a TextExtractor when a supported file yields no usable text
     (corrupt file, or a scanned PDF with no text layer — OCR is out of scope,
     see specs/file-upload.md §1)."""
+
+
+class UploadNotFound(DomainError):
+    """Raised when an upload doesn't exist for the given user."""

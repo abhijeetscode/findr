@@ -10,6 +10,7 @@ from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import Ela
 from findr.adapters.outbound.files.local_file_storage import LocalFileStorage
 from findr.config import Settings
 from findr.domain.entities import User
+from findr.ports.upload_queue import UploadQueue
 
 SESSION_COOKIE_NAME = "findr_session"
 
@@ -42,6 +43,10 @@ def get_search_index(
         request.app.state.embedding_provider,
         min_similarity=settings.semantic_min_similarity,
     )
+
+
+def get_upload_queue(request: Request) -> UploadQueue:
+    return request.app.state.upload_queue
 
 
 def get_file_storage(settings: Settings = Depends(get_settings)) -> LocalFileStorage:

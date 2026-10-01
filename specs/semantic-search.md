@@ -1,6 +1,6 @@
 # Spec: Semantic search (embeddings + hybrid BM25/kNN)
 
-Status: **Implemented** (branch `feature/file-upload-semantic-search`). Deviations from the draft are recorded in §11. **§12 (semantic search scoped to uploaded files) is a revision drafted after implementation: agreed in principle, not yet implemented.** Where §1–§11 say embeddings apply to every source, §12 supersedes them.
+Status: **Implemented** (branch `feature/file-upload-semantic-search`). Deviations from the draft are recorded in §11. **§12 (semantic search scoped to uploaded files) is a later revision, now implemented.** Where §1–§11 say embeddings apply to every source, §12 supersedes them.
 Owner: findr
 Related: `specs/elasticsearch-search.md` §10 (this is that spec's explicitly-planned "next phase," now being scoped: *"an `EmbeddingProvider` port, a `dense_vector` field added to the mapping, and a hybrid BM25+kNN query"*), `specs/file-upload.md` (sibling spec — after the §12 revision, uploaded files are the *only* documents that get semantic search; still with zero upload-specific code outside the search adapter), `CLAUDE.md` ("Search" principle: *"Don't let the keyword-search implementation foreclose adding semantic search later — keep indexing/retrieval behind a port"* — this spec is written specifically to honor that: no domain or application code changes, see §2).
 
@@ -136,7 +136,7 @@ Same split as every other adapter in this codebase: `EmbeddingProvider`'s local 
 
 ## 12. Revision: semantic search for uploaded files only
 
-Status: **Agreed in principle, not yet implemented.** Supersedes §1–§11 wherever they say embeddings apply to every source. **`specs/upload-chunking.md` (draft) builds on this section:** an upload is embedded as many chunks (nested vectors) instead of one vector. It changes *how* uploads are embedded; *which* sources are embedded stays as decided here.
+Status: **Implemented**, together with `specs/upload-chunking.md`. Supersedes §1–§11 wherever they say embeddings apply to every source. **`specs/upload-chunking.md` (draft) builds on this section:** an upload is embedded as many chunks (nested vectors) instead of one vector. It changes *how* uploads are embedded; *which* sources are embedded stays as decided here.
 
 ### 12.1 Why
 

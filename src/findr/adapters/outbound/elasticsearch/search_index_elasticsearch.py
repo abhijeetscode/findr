@@ -5,11 +5,21 @@ from datetime import datetime
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
 
-from findr.domain.entities import Document, SearchHit
+from findr.domain.entities import Document, DocumentChunk, SearchHit
 from findr.domain.value_objects import SourceType
 from findr.ports.embedding_provider import EmbeddingProvider
 
 _SNIPPET_FIELDS = ("body_text", "subject", "sender")
+_SNIPPET_LENGTH = 200
+
+# Only these sources get chunk vectors and semantic search; everything else
+# (Gmail today) is keyword-only and never touches the embedding model. Fixed
+# in code, deliberately not configurable — see specs/semantic-search.md §12.
+EMBEDDED_SOURCE_TYPES = frozenset({SourceType.FILE})
+
+# Vectors never travel back in search responses ("embedding" is the unused
+# pre-chunking field on older indices).
+_SOURCE_EXCLUDES = ["chunks", "embedding"]
 
 _RESULT_SIZE = 50
 # Standard RRF constant (Cormack et al.; also Elasticsearch's default).
@@ -42,8 +52,13 @@ class ElasticsearchIndex:
     rather than via Elasticsearch's `rrf` retriever: that retriever is a
     paid-licence feature and returns 403 on the basic licence the
     docker-compose cluster runs. Both legs go out in one `_msearch`; only
-    the BM25 leg carries `highlight`, so a hit found by kNN alone gets
-    `_build_snippet`'s plain body-prefix fallback instead of `[...]` markers.
+    the BM25 leg carries `highlight`.
+
+    Semantic search covers uploaded files only (EMBEDDED_SOURCE_TYPES,
+    specs/semantic-search.md §12), over one vector per chunk, stored nested
+    inside the document (specs/upload-chunking.md §6). A document scores by
+    its best-matching chunk, and a hit found by kNN alone shows that chunk
+    as its snippet.
     """
 
     def __init__(
@@ -63,7 +78,7 @@ class ElasticsearchIndex:
             return []
 
         user_filter = {"term": {"user_id": user_id}}
-        source_filter = {"excludes": ["embedding"]}
+        source_filter = {"excludes": _SOURCE_EXCLUDES}
         bm25_body = {
             "query": {
                 "bool": {
@@ -86,12 +101,20 @@ class ElasticsearchIndex:
         }
         knn_body = {
             "knn": {
-                "field": "embedding",
+                "field": "chunks.embedding",
                 "query_vector": self._embedding_provider.embed_query(query),
                 "k": _RESULT_SIZE,
                 "num_candidates": _KNN_NUM_CANDIDATES,
                 "similarity": self._min_similarity,
-                "filter": user_filter,
+                # The source_type filter is explicit even though only these
+                # sources carry vectors, so stale vectors on anything else
+                # can never surface semantically (semantic-search.md §12.4).
+                "filter": [
+                    user_filter,
+                    {"terms": {"source_type": sorted(t.value for t in EMBEDDED_SOURCE_TYPES)}},
+                ],
+                # The best-matching chunk, for the snippet.
+                "inner_hits": {"size": 1, "_source": ["chunks.text", "chunks.kind"]},
             },
             "_source": source_filter,
             "size": _RESULT_SIZE,
@@ -109,6 +132,8 @@ class ElasticsearchIndex:
             if "error" in leg:
                 raise RuntimeError(f"Elasticsearch search failed: {leg['error']}")
             legs.append(leg["hits"]["hits"])
+
+        matched_chunks = {raw["_id"]: _best_chunk_text(raw) for raw in legs[1]}
 
         hits: list[SearchHit] = []
         for raw, score in _reciprocal_rank_fusion(legs)[:_RESULT_SIZE]:
@@ -128,7 +153,11 @@ class ElasticsearchIndex:
             hits.append(
                 SearchHit(
                     document=document,
-                    snippet=_build_snippet(raw.get("highlight", {}), source.get("body_text")),
+                    snippet=_build_snippet(
+                        raw.get("highlight", {}),
+                        matched_chunks.get(raw["_id"]),
+                        source.get("body_text"),
+                    ),
                     score=score,
                     source_type=SourceType(source["source_type"]),
                     external_account=source.get("external_account"),
@@ -144,18 +173,23 @@ class ElasticsearchIndex:
     ) -> None:
         if not documents:
             return
+        embed = source_type in EMBEDDED_SOURCE_TYPES
         actions = [
             {
                 "_index": self._index,
                 "_id": str(doc.id),
-                "_source": self._to_source(doc, source_type, external_account),
+                "_source": self._to_source(doc, source_type, external_account, embed),
             }
             for doc in documents
         ]
         bulk(self._client, actions, refresh=True)
 
     def _to_source(
-        self, doc: Document, source_type: SourceType, external_account: str | None
+        self,
+        doc: Document,
+        source_type: SourceType,
+        external_account: str | None,
+        embed: bool,
     ) -> dict:
         source = {
             "user_id": doc.user_id,
@@ -170,14 +204,14 @@ class ElasticsearchIndex:
             "sent_at": doc.sent_at.isoformat() if doc.sent_at else None,
             "thread_id": doc.thread_id,
         }
-        # Subject is embedded along with the body: it's often the most
-        # meaningful text (an email subject, an uploaded file's name), and
-        # it gives subject-only documents a vector at all. A document with
-        # no text at all gets no vector — Elasticsearch rejects zero-length
-        # vectors under cosine similarity — and stays BM25-only.
-        text = "\n\n".join(part for part in (doc.subject, doc.body_text) if part and part.strip())
-        if text:
-            source["embedding"] = self._embedding_provider.embed_document(text)
+        # A document without chunks (e.g. an upload from before chunking)
+        # stays keyword-only.
+        if embed and doc.chunks:
+            vectors = self._embedding_provider.embed_documents([c.text for c in doc.chunks])
+            source["chunks"] = [
+                _chunk_to_source(chunk, vector)
+                for chunk, vector in zip(doc.chunks, vectors, strict=True)
+            ]
         return source
 
     def delete_documents(self, connection_id: int, external_ids: list[str]) -> None:
@@ -214,12 +248,45 @@ def _reciprocal_rank_fusion(legs: list[list[dict]]) -> list[tuple[dict, float]]:
     return [(first_seen[doc_id], scores[doc_id]) for doc_id in ranked]
 
 
-def _build_snippet(highlight: dict, fallback_body: str | None) -> str:
+def _chunk_to_source(chunk: DocumentChunk, vector: list[float]) -> dict:
+    metadata = chunk.metadata
+    return {
+        "text": chunk.text,
+        "kind": chunk.kind.value,
+        "table_html": chunk.table_html,
+        "embedding": vector,
+        "metadata": {
+            "chunk_index": metadata.chunk_index,
+            "document_version": metadata.document_version,
+            "content_sha256": metadata.content_sha256,
+            "filename": metadata.filename,
+            "mime_type": metadata.mime_type,
+            "page_start": metadata.page_start,
+            "page_end": metadata.page_end,
+            "section_title": metadata.section_title,
+            "element_types": metadata.element_types,
+            "languages": metadata.languages,
+            "is_continuation": metadata.is_continuation,
+            "parser_version": metadata.parser_version,
+        },
+    }
+
+
+def _best_chunk_text(raw: dict) -> str | None:
+    inner = raw.get("inner_hits", {}).get("chunks", {}).get("hits", {}).get("hits", [])
+    return inner[0]["_source"].get("text") if inner else None
+
+
+def _build_snippet(highlight: dict, matched_chunk: str | None, fallback_body: str | None) -> str:
+    """Keyword highlight if BM25 found the document; otherwise the chunk
+    kNN matched; otherwise the start of the body."""
     for field in _SNIPPET_FIELDS:
         fragments = highlight.get(field)
         if fragments:
             return fragments[0]
-    return (fallback_body or "")[:200]
+    if matched_chunk:
+        return matched_chunk[:_SNIPPET_LENGTH]
+    return (fallback_body or "")[:_SNIPPET_LENGTH]
 
 
 def _parse_date(value: str | None) -> datetime | None:

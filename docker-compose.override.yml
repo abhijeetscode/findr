@@ -4,6 +4,11 @@
 # container (no bind mount, no --reload), exclude this file explicitly:
 #   docker compose -f docker-compose.yml up --build
 services:
+  worker:
+    # Code changes need `docker compose restart worker` (no hot reload for
+    # the worker).
+    volumes:
+      - ./src:/app/src
   app:
     volumes:
       - ./src:/app/src
