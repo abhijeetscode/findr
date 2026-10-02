@@ -6,6 +6,7 @@ import pytest
 
 from findr.application.uploads.delete_document import DeleteDocument
 from findr.application.uploads.delete_upload import DeleteUpload
+from findr.application.uploads.get_document_file import DocumentFile, GetDocumentFile
 from findr.application.uploads.process_upload import (
     GAVE_UP_MESSAGE,
     MAX_ATTEMPTS,
@@ -495,6 +496,33 @@ def test_delete_document_also_removes_its_upload_record_and_file():
     assert env.storage.deleted == [upload.storage_path]
     with pytest.raises(DocumentNotFound):
         env.delete_document(document_id)
+
+
+# ---------- GetDocumentFile ----------
+
+
+def test_get_document_file_returns_the_original_to_its_owner():
+    env = Env()
+    upload = env.upload(filename="report.pdf", mime="application/pdf", content=b"%PDF-1.7")
+    env.process(upload.id)
+    document_id = env.uploads.rows[upload.id].document_id
+
+    file = GetDocumentFile(env.uploads, env.storage).execute(document_id, user_id=7)
+
+    assert file == DocumentFile(content=b"%PDF-1.7", mime_type="application/pdf", filename="report.pdf")
+
+
+def test_get_document_file_is_not_found_for_others_missing_or_non_upload_documents():
+    env = Env()
+    upload = env.upload()
+    env.process(upload.id)
+    document_id = env.uploads.rows[upload.id].document_id
+    use_case = GetDocumentFile(env.uploads, env.storage)
+
+    with pytest.raises(DocumentNotFound):
+        use_case.execute(document_id, user_id=8)  # someone else's
+    with pytest.raises(DocumentNotFound):
+        use_case.execute(12345, user_id=7)  # missing, or e.g. a Gmail message (no upload row)
 
 
 # ---------- stale-upload sweep ----------

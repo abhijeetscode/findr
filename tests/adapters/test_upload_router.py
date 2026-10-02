@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from findr.adapters.inbound.http.app import app
+from findr.adapters.inbound.http.routers.documents_router import _inline_disposition
 from findr.adapters.outbound.crypto.password_hasher_argon2 import Argon2Hasher
 from findr.adapters.outbound.files.unstructured_document_parser import (
     UnstructuredDocumentParser,
@@ -59,6 +60,7 @@ def test_upload_endpoints_require_login(app_env):
         assert client.get("/uploads/1").status_code == 401
         assert client.delete("/uploads/1").status_code == 401
         assert client.delete("/documents/1").status_code == 401
+        assert client.get("/documents/1/file").status_code == 401
 
 
 def test_old_user_wide_upload_endpoints_are_gone(app_env):
@@ -220,12 +222,43 @@ def test_other_users_uploads_are_invisible_and_undeletable(app_env, upload_queue
         assert client.get(f"/uploads/{upload_id}").status_code == 404
         assert client.delete(f"/uploads/{upload_id}").status_code == 404
         assert client.delete(f"/documents/{document_id}").status_code == 404
+        assert client.get(f"/documents/{document_id}/file").status_code == 404
         assert _search(client, other_ws, "renewal") == []
         client.post("/auth/logout")
 
         client.post("/auth/login", json=DEMO_LOGIN)
         assert len(_search(client, ws, "renewal")) == 1
         assert len(_stored_files()) == 1
+
+
+def test_search_result_opens_the_original_file(app_env, upload_queue):
+    # specs/open-files-and-pdf-pages.md §3.1. Markdown that contains HTML is
+    # served as plain text, so it can never run in our origin.
+    with TestClient(app) as client:
+        ws = _login(client)
+        content = "# Renewal\n\nrenewal terms <script>alert(1)</script>".encode()
+        _upload(client, ws, "résumé v2.md", content, "text/markdown")
+        _drain_queue(upload_queue)
+        [result] = _search(client, ws, "renewal")
+
+        assert result["url"] == f"/documents/{result['document_id']}/file"
+        assert result["pages"] == []  # Markdown has no pages
+        resp = client.get(result["url"])
+
+        assert resp.status_code == 200
+        assert resp.content == content
+        assert resp.headers["content-type"] == "text/plain; charset=utf-8"
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert resp.headers["content-disposition"] == (
+            "inline; filename=\"r_sum_ v2.md\"; filename*=UTF-8''r%C3%A9sum%C3%A9%20v2.md"
+        )
+        assert client.get("/documents/999999/file").status_code == 404
+
+
+def test_content_disposition_escapes_quotes_and_backslashes():
+    assert _inline_disposition('a "b"\\c.pdf') == (
+        "inline; filename=\"a _b__c.pdf\"; filename*=UTF-8''a%20%22b%22%5Cc.pdf"
+    )
 
 
 def test_uploaded_files_connection_cannot_be_resynced_or_disconnected(app_env, upload_queue):

@@ -129,6 +129,10 @@ a.result-card:hover {
   border-radius: 6px; padding: 3px 8px;
 }
 .result-context { font-size: 12px; color: #B3AFA2; }
+.result-pages {
+  font-size: 11px; font-weight: 600; color: #5B5748; background: #F1EEE6;
+  border-radius: 6px; padding: 3px 8px;
+}
 .empty-state {
   font-size: 13px; color: #8E8B80; padding: 28px; text-align: center;
   background: #fff; border: 1px dashed #E1DDD1; border-radius: 12px;
@@ -1014,6 +1018,9 @@ a.result-card:hover {
             '<div class="result-snippet">' + fromLine + renderSnippet(hit.snippet) + '</div>' +
             '<div class="result-meta-row">' +
               '<span class="result-badge" style="color:' + meta.color + '; background:' + meta.bg + ';">' + meta.icon(meta.color) + ' ' + meta.label + '</span>' +
+              (hit.pages && hit.pages.length
+                ? '<span class="result-pages" title="Pages with matches">p. ' + formatPages(hit.pages) + '</span>'
+                : '') +
               (hit.recipients ? '<span class="result-context">' + escapeHtml(hit.recipients) + '</span>' : '') +
               (hit.source_type === "file"
                 ? '<button type="button" class="delete-doc-btn" data-id="' + hit.document_id + '" aria-label="Delete ' + escapeHtml(title) + '">Delete</button>'
@@ -1024,8 +1031,24 @@ a.result-card:hover {
       );
     }).join("");
     Array.prototype.forEach.call(list.querySelectorAll(".delete-doc-btn"), function (btn) {
-      btn.addEventListener("click", function () { deleteDocument(btn.getAttribute("data-id")); });
+      btn.addEventListener("click", function (event) {
+        // The button sits inside the card's link — don't also open the file.
+        event.preventDefault();
+        event.stopPropagation();
+        deleteDocument(btn.getAttribute("data-id"));
+      });
     });
+  }
+
+  // [3, 4, 5, 12] -> "3–5, 12". Pages arrive sorted and deduplicated.
+  function formatPages(pages) {
+    var parts = [];
+    for (var i = 0; i < pages.length; i++) {
+      var start = pages[i];
+      while (i + 1 < pages.length && pages[i + 1] === pages[i] + 1) i++;
+      parts.push(start === pages[i] ? String(start) : start + "\u2013" + pages[i]);
+    }
+    return parts.join(", ");
   }
 
   function deleteDocument(id) {

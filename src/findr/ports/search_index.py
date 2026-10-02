@@ -10,7 +10,8 @@ class SearchIndex(Protocol):
 
     def search(self, user_id: int, workspace_id: int, query: str) -> list[SearchHit]:
         """Only ever returns documents from this one workspace (and user) —
-        see specs/workspaces.md §2."""
+        see specs/workspaces.md §2. For paged files (PDF), each hit's `pages`
+        lists the pages its match is on (specs/open-files-and-pdf-pages.md)."""
         ...
 
     def index_documents(
