@@ -459,3 +459,157 @@ def test_delete_workspace_removes_only_that_workspaces_documents(
     search = SearchDocuments(search_index)
     assert search.execute(1, 100, "renewal") == []
     assert len(search.execute(1, 200, "renewal")) == 1
+
+
+# ---------- page numbers (specs/open-files-and-pdf-pages.md) ----------
+
+
+def _pdf_upload(doc_id, pages_by_text, *, chunk_factory, **kwargs):
+    """An uploaded PDF whose chunks span the given (page_start, page_end)."""
+    upload = _upload(doc_id, list(pages_by_text), subject="report.pdf", chunk_factory=chunk_factory, **kwargs)
+    for chunk, (start, end) in zip(upload.chunks, pages_by_text.values(), strict=True):
+        chunk.metadata.page_start, chunk.metadata.page_end = start, end
+    return upload
+
+
+def test_keyword_hit_lists_every_page_with_a_matching_chunk(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    upload = _pdf_upload(
+        1,
+        {
+            "Renewal terms for the contract": (7, 7),
+            "Budget overview": (1, 1),
+            "The renewal fee is due": (2, 3),  # spans two pages
+            "Appendix": (4, 4),
+            "Renewal deadline repeated": (3, 3),  # page 3 again
+        },
+        chunk_factory=chunk_factory,
+    )
+    search_index.index_documents([upload], SourceType.FILE, None, WS)
+
+    hits = SearchDocuments(search_index).execute(1, WS, "renewal")
+
+    assert [h.document.external_id for h in hits] == ["upload-1"]
+    assert hits[0].pages == [2, 3, 7]
+
+
+def test_semantic_only_hit_lists_its_best_chunks_pages(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    # body_text lacks the words, so only the kNN leg finds the document.
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    upload = _pdf_upload(
+        1, {"opening paragraph about budgets": (1, 1), "zebra migration": (5, 6)},
+        body_text="opening paragraph about budgets", chunk_factory=chunk_factory,
+    )
+    search_index.index_documents([upload], SourceType.FILE, None, WS)
+
+    hits = SearchDocuments(search_index).execute(1, WS, "zebra migration")
+
+    assert [h.document.external_id for h in hits] == ["upload-1"]
+    assert hits[0].pages == [5, 6]
+
+
+def test_hits_without_page_numbers_have_no_pages(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    # Matches on the filename only.
+    pdf = _pdf_upload(1, {"Budget overview": (1, 1)}, chunk_factory=chunk_factory)
+    pdf.subject = "renewal report.pdf"
+    # A text file: chunks match, but carry no pages.
+    text_file = _upload(2, ["renewal terms"], subject="notes.txt", chunk_factory=chunk_factory)
+    search_index.index_documents([pdf, text_file], SourceType.FILE, None, WS)
+    search_index.index_documents(
+        [_make_document(doc_id=3, user_id=1, connection_id=1, external_id="m-1",
+                        subject="Renewal", body_text="renewal")],
+        SourceType.GMAIL, "a@gmail.com", WS,
+    )
+
+    hits = SearchDocuments(search_index).execute(1, WS, "renewal")
+
+    assert sorted(h.document.external_id for h in hits) == ["m-1", "upload-1", "upload-2"]
+    assert all(h.pages == [] for h in hits)
+
+
+def test_page_clause_changes_neither_matches_nor_ranking(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    # The BM25 leg's page-finding clause must be inert: the same documents,
+    # with the same scores, as the query without it.
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    search_index.index_documents(
+        [
+            _pdf_upload(1, {"renewal renewal renewal": (1, 1)}, body_text="renewal once",
+                        chunk_factory=chunk_factory),
+            _pdf_upload(2, {"nothing here": (1, 1)}, body_text="renewal renewal terms",
+                        chunk_factory=chunk_factory),
+            _pdf_upload(3, {"renewal": (2, 2)}, body_text="unrelated", chunk_factory=chunk_factory),
+        ],
+        SourceType.FILE, None, WS,
+    )
+    sent = []
+    real_msearch = es_client.msearch
+    es_client.msearch = lambda searches: sent.append(searches) or real_msearch(searches=searches)
+    SearchDocuments(search_index).execute(1, WS, "the renewal terms")
+    bm25_body = sent[0][1]
+
+    def ranked(body):
+        hits = es_client.search(index=es_index, query=body["query"], size=10)["hits"]["hits"]
+        return [(h["_id"], h["_score"]) for h in hits]
+
+    without_clause = {"bool": {k: v for k, v in bm25_body["query"]["bool"].items() if k != "should"}}
+    assert "should" in bm25_body["query"]["bool"]
+    assert ranked(bm25_body) == ranked({"query": without_clause})
+    # Document 3 only has "renewal" in a chunk, not body_text: still no match.
+    assert "3" not in [doc_id for doc_id, _ in ranked(bm25_body)]
+
+
+def test_ensure_index_makes_chunk_text_searchable_on_an_existing_index(es_client):
+    index_name = f"findr_test_{uuid.uuid4().hex[:12]}"
+    old_chunks = {
+        **INDEX_MAPPING["properties"]["chunks"],
+        "properties": {
+            **INDEX_MAPPING["properties"]["chunks"]["properties"],
+            "text": {"type": "text", "index": False},
+        },
+    }
+    es_client.indices.create(
+        index=index_name,
+        mappings={"properties": {**INDEX_MAPPING["properties"], "chunks": old_chunks}},
+    )
+    try:
+        ensure_index(es_client, index_name)
+
+        text = es_client.indices.get_mapping(index=index_name)[index_name]["mappings"][
+            "properties"
+        ]["chunks"]["properties"]["text"]
+        assert text["fields"]["search"]["type"] == "text"
+    finally:
+        es_client.indices.delete(index=index_name, ignore_unavailable=True)
+
+
+def test_multi_word_query_lists_only_pages_with_every_word(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    # OR-matching would list every page containing "the" — useless on
+    # natural-language queries. A page needs one chunk with all the words.
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    upload = _pdf_upload(
+        1,
+        {
+            "the budget overview": (1, 1),
+            "the renewal fee is due": (2, 2),
+            "the appendix": (3, 3),
+            "renewal without article": (4, 4),
+        },
+        chunk_factory=chunk_factory,
+    )
+    search_index.index_documents([upload], SourceType.FILE, None, WS)
+
+    hits = SearchDocuments(search_index).execute(1, WS, "the renewal")
+
+    assert [h.document.external_id for h in hits] == ["upload-1"]
+    assert hits[0].pages == [2]

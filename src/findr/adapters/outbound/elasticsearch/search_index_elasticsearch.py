@@ -25,6 +25,12 @@ _RESULT_SIZE = 50
 # Standard RRF constant (Cormack et al.; also Elasticsearch's default).
 _RRF_RANK_CONSTANT = 60
 _KNN_NUM_CANDIDATES = 200
+# Chunk fields carrying a match's page numbers; and the most matching chunks
+# read per document to collect them (Elasticsearch's default
+# index.max_inner_result_window). See specs/open-files-and-pdf-pages.md §2.1.
+_PAGE_FIELDS = ["chunks.metadata.page_start", "chunks.metadata.page_end"]
+_KEYWORD_PAGES_INNER_HITS = "keyword_pages"
+_MAX_PAGE_CHUNKS = 100
 # kNN always returns its k nearest neighbours, however unrelated — without a
 # floor, every query would "match" every document. Cosine similarity of
 # L2-normalised Qwen3-Embedding vectors. Tuned against the real model: on a
@@ -94,6 +100,34 @@ class ElasticsearchIndex:
                         }
                     },
                     "filter": scope_filter,
+                    # Finds which chunks hold the keywords, only to read
+                    # their pages. Scores 0 and sits in `should` beside a
+                    # `must`, so it can't change what matches or the ranking.
+                    # A chunk needs every word: with OR, a common word like
+                    # "the" would mark nearly every page.
+                    "should": {
+                        "constant_score": {
+                            "filter": {
+                                "nested": {
+                                    "path": "chunks",
+                                    "query": {
+                                        "match": {
+                                            "chunks.text.search": {
+                                                "query": query,
+                                                "operator": "and",
+                                            }
+                                        }
+                                    },
+                                    "inner_hits": {
+                                        "name": _KEYWORD_PAGES_INNER_HITS,
+                                        "size": _MAX_PAGE_CHUNKS,
+                                        "_source": _PAGE_FIELDS,
+                                    },
+                                }
+                            },
+                            "boost": 0,
+                        }
+                    },
                 }
             },
             "highlight": {
@@ -118,8 +152,11 @@ class ElasticsearchIndex:
                     *scope_filter,
                     {"terms": {"source_type": sorted(t.value for t in EMBEDDED_SOURCE_TYPES)}},
                 ],
-                # The best-matching chunk, for the snippet.
-                "inner_hits": {"size": 1, "_source": ["chunks.text", "chunks.kind"]},
+                # The best-matching chunk, for the snippet and its pages.
+                "inner_hits": {
+                    "size": 1,
+                    "_source": ["chunks.text", "chunks.kind", *_PAGE_FIELDS],
+                },
             },
             "_source": source_filter,
             "size": _RESULT_SIZE,
@@ -139,6 +176,10 @@ class ElasticsearchIndex:
             legs.append(leg["hits"]["hits"])
 
         matched_chunks = {raw["_id"]: _best_chunk_text(raw) for raw in legs[1]}
+        keyword_pages = {
+            raw["_id"]: _pages(raw, _KEYWORD_PAGES_INNER_HITS) for raw in legs[0]
+        }
+        semantic_pages = {raw["_id"]: _pages(raw, "chunks") for raw in legs[1]}
 
         hits: list[SearchHit] = []
         for raw, score in _reciprocal_rank_fusion(legs)[:_RESULT_SIZE]:
@@ -167,6 +208,7 @@ class ElasticsearchIndex:
                     score=score,
                     source_type=SourceType(source["source_type"]),
                     external_account=source.get("external_account"),
+                    pages=keyword_pages.get(raw["_id"]) or semantic_pages.get(raw["_id"], []),
                 )
             )
         return hits
@@ -293,6 +335,19 @@ def _chunk_to_source(chunk: DocumentChunk, vector: list[float]) -> dict:
 def _best_chunk_text(raw: dict) -> str | None:
     inner = raw.get("inner_hits", {}).get("chunks", {}).get("hits", {}).get("hits", [])
     return inner[0]["_source"].get("text") if inner else None
+
+
+def _pages(raw: dict, inner_hits_name: str) -> list[int]:
+    """Every page the named inner hits' chunks span, sorted and deduplicated.
+    A chunk without page numbers (non-PDF) contributes none."""
+    inner = raw.get("inner_hits", {}).get(inner_hits_name, {}).get("hits", {}).get("hits", [])
+    pages: set[int] = set()
+    for chunk in inner:
+        metadata = chunk.get("_source", {}).get("metadata", {})
+        start, end = metadata.get("page_start"), metadata.get("page_end")
+        if start is not None:
+            pages.update(range(start, (end if end is not None else start) + 1))
+    return sorted(pages)
 
 
 def _build_snippet(highlight: dict, matched_chunk: str | None, fallback_body: str | None) -> str:

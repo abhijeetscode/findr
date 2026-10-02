@@ -8,14 +8,15 @@ from elasticsearch import Elasticsearch
 EMBEDDING_DIMS = 1024
 
 # Nested chunks of an uploaded document: one vector per chunk, plus the
-# chunk's text (for snippets, not keyword search — that stays on body_text)
-# and its metadata, explicitly typed so future filters such as "latest
-# document_version only" are exact matches. See
-# specs/upload-chunking.md §6.4.
+# chunk's text and its metadata, explicitly typed so future filters such as
+# "latest document_version only" are exact matches. See
+# specs/upload-chunking.md §6.4. Keyword ranking stays on body_text; the
+# chunk text's "search" multi-field only finds which pages a keyword match
+# is on (specs/open-files-and-pdf-pages.md §4).
 CHUNKS_FIELD_MAPPING = {
     "type": "nested",
     "properties": {
-        "text": {"type": "text", "index": False},
+        "text": {"type": "text", "index": False, "fields": {"search": {"type": "text"}}},
         "kind": {"type": "keyword"},
         "table_html": {"type": "text", "index": False},
         "embedding": {

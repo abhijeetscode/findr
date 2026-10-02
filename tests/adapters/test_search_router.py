@@ -39,8 +39,8 @@ def test_source_url_for_gmail():
     )
 
 
-def test_source_url_is_none_for_uploaded_files():
-    assert _source_url(_hit(SourceType.FILE, "0b1c2d3e-uuid")) is None
+def test_source_url_for_uploaded_files_is_our_copy_of_the_original():
+    assert _source_url(_hit(SourceType.FILE, "0b1c2d3e-uuid")) == "/documents/1/file"
 
 
 DEMO_LOGIN = {"email": "demouser", "password": "password@2050"}

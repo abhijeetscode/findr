@@ -19,6 +19,9 @@ def _source_url(hit: SearchHit) -> str | None:
     external_id = hit.document.external_id
     if hit.source_type == SourceType.GMAIL:
         return f"https://mail.google.com/mail/u/0/#all/{external_id}"
+    if hit.source_type == SourceType.FILE:
+        # Our own copy of the original (specs/open-files-and-pdf-pages.md §3.1).
+        return f"/documents/{hit.document.id}/file"
     return None
 
 
@@ -32,6 +35,8 @@ class SearchHitResponse(BaseModel):
     score: float
     sent_at: str | None
     url: str | None
+    # Pages of a PDF the match is on; empty when unknown or not paged.
+    pages: list[int]
 
 
 class SearchResponse(BaseModel):
@@ -58,6 +63,7 @@ def search(
                 score=hit.score,
                 sent_at=hit.document.sent_at.isoformat() if hit.document.sent_at else None,
                 url=_source_url(hit),
+                pages=hit.pages,
             )
             for hit in hits
         ]

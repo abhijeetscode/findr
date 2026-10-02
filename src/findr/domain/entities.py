@@ -151,6 +151,10 @@ class SearchHit:
     # The connection's dedup key (e.g. the Gmail address) — available for
     # sources whose deep links back to the original item need it.
     external_account: str | None = None
+    # Pages of a paged file (PDF) the match is on: every page with a keyword
+    # match, else the best semantic chunk's pages. Sorted, deduplicated;
+    # empty when unknown. See specs/open-files-and-pdf-pages.md §2.1.
+    pages: list[int] = field(default_factory=list)
 
 
 @dataclass
