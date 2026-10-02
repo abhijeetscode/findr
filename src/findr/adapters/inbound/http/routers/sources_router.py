@@ -1,3 +1,4 @@
+import logging
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -42,6 +43,9 @@ from findr.domain.exceptions import (
     SourceInOtherWorkspace,
 )
 from findr.domain.value_objects import ConnectionStatus, SourceType
+from findr.observability import log_event
+
+logger = logging.getLogger(__name__)
 
 # Item routes: a connection's id already pins down its workspace.
 router = APIRouter(prefix="/sources", tags=["sources"])
@@ -124,6 +128,7 @@ def gmail_callback(
     try:
         use_case.execute(code, state)
     except SourceInOtherWorkspace as exc:
+        _log_connect_failure(exc)
         # A browser redirect, not an API call: send the user back to the UI
         # with a message it shows (specs/workspaces.md §5.2).
         db.rollback()
@@ -131,13 +136,27 @@ def gmail_callback(
             "/?" + urlencode({"connect_error": str(exc)}), status_code=status.HTTP_302_FOUND
         )
     except InvalidOAuthState as exc:
+        _log_connect_failure(exc)
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except SourceAuthError as exc:
+        _log_connect_failure(exc)
         db.rollback()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     db.commit()
     return RedirectResponse("/", status_code=status.HTTP_302_FOUND)
+
+
+def _log_connect_failure(exc: Exception) -> None:
+    # The exception's type only: SourceInOtherWorkspace's message names the
+    # other workspace, i.e. a client (specs/logging-telemetry.md §8).
+    log_event(
+        logger,
+        "source.connect.failed",
+        level=logging.WARNING,
+        source_type=SourceType.GMAIL.value,
+        reason=type(exc).__name__,
+    )
 
 
 @router.post("/{connection_id}/sync", response_model=SourceConnectionResponse)

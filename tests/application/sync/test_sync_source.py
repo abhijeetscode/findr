@@ -315,3 +315,98 @@ def test_sync_source_marks_error_on_unexpected_failure_without_raising():
 
     assert connection_repo.status_updates[0][1] == ConnectionStatus.ERROR
     assert "boom" in connection_repo.status_updates[0][2]
+
+
+def _sync_with(connector, oauth_provider=None, credentials=None):
+    clock = FixedClock(datetime(2024, 6, 1))
+    creds = credentials or Credentials("access", "refresh", expires_at=datetime(2024, 6, 2))
+    use_case = SyncSource(
+        connector,
+        oauth_provider or FakeOAuthProvider(),
+        FakeCredentialStore({1: creds}),
+        FakeSourceConnectionRepository(),
+        FakeDocumentRepository(),
+        FakeSearchIndex(),
+        clock,
+    )
+    return use_case.execute(_connection())
+
+
+def _sync_events(caplog):
+    return [r for r in caplog.records if getattr(r, "event", None) == "sync.connection"]
+
+
+def test_sync_logs_counts_and_returns_the_status(caplog):
+    # specs/logging-telemetry.md §6.
+    caplog.set_level("DEBUG")
+    batch = ChangeBatch(upserts=[], deleted_external_ids=["a", "b"], new_cursor="c")
+
+    assert _sync_with(FakeConnector(responses=[batch])) == ConnectionStatus.ACTIVE
+
+    [record] = _sync_events(caplog)
+    assert (record.outcome, record.upserts, record.deletes) == ("ok", 0, 2)
+    assert record.levelname == "INFO"
+
+
+def test_sync_failure_is_logged_with_its_traceback(caplog):
+    # Gap §7.1: the error used to be stored on the connection and never logged.
+    caplog.set_level("DEBUG")
+
+    assert _sync_with(FakeConnector(error=RuntimeError("boom"))) == ConnectionStatus.ERROR
+
+    [record] = _sync_events(caplog)
+    assert (record.outcome, record.levelname) == ("error", "WARNING")
+    assert record.exc_info[0] is RuntimeError
+
+
+def test_sync_needing_reauth_is_logged_without_a_traceback(caplog):
+    caplog.set_level("DEBUG")
+    expired = Credentials("old", "refresh", expires_at=datetime(2024, 5, 1))
+    oauth = FakeOAuthProvider(refresh_error=SourceAuthError("invalid_grant"))
+
+    status = _sync_with(FakeConnector(), oauth_provider=oauth, credentials=expired)
+
+    assert status == ConnectionStatus.NEEDS_REAUTH
+    [record] = _sync_events(caplog)
+    assert (record.outcome, record.levelname) == ("needs_reauth", "WARNING")
+    assert not record.exc_info
+
+
+def test_sync_logs_never_carry_mail_content_or_addresses(tmp_path):
+    # specs/logging-telemetry.md §8: not on success, and not when an
+    # upstream error message quotes an address.
+    import json
+    import logging
+
+    from findr.config import Settings
+    from findr.observability.setup import configure_logging
+
+    path = configure_logging(
+        Settings(FINDR_LOG_DIR=str(tmp_path), FINDR_LOG_LEVEL="DEBUG"), "api"
+    )
+    doc = Document(
+        id=0,
+        user_id=10,
+        connection_id=1,
+        external_id="msg-1",
+        subject="Project Zanzibar term sheet",
+        sender="ceo@globex.example",
+        recipients="cfo@globex.example",
+        body_text="Confidential pricing",
+        sent_at=None,
+    )
+    ok = ChangeBatch(upserts=[doc], deleted_external_ids=[], new_cursor="c")
+    _sync_with(FakeConnector(responses=[ok]))
+    _sync_with(FakeConnector(error=RuntimeError("Delegation denied for ceo@globex.example")))
+
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [r["outcome"] for r in records if r.get("event") == "sync.connection"] == [
+        "ok",
+        "error",
+    ]
+    text = path.read_text().lower()
+    for secret in ("zanzibar", "globex", "confidential"):
+        assert secret not in text
+    assert "[email]" in text

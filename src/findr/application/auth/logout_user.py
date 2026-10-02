@@ -1,4 +1,9 @@
+import logging
+
+from findr.observability import log_event
 from findr.ports.session_store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 
 class LogoutUser:
@@ -7,3 +12,4 @@ class LogoutUser:
 
     def execute(self, token: str) -> None:
         self._session_store.delete(token)
+        log_event(logger, "auth.logout")

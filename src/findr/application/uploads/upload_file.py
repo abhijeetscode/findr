@@ -3,6 +3,7 @@ import logging
 
 from findr.domain.entities import UploadedFile
 from findr.domain.exceptions import ExtractionFailed, UnsupportedFileType
+from findr.observability import log_event
 from findr.ports.file_storage import FileStorage
 from findr.ports.unit_of_work import UnitOfWork
 from findr.ports.upload_queue import UploadQueue
@@ -66,8 +67,25 @@ class UploadFile:
         # Commit before enqueuing, so a worker can never receive an id whose
         # row isn't visible yet.
         self._unit_of_work.commit()
+        # Never the filename: it often names the client
+        # (specs/logging-telemetry.md §8).
+        log_event(
+            logger,
+            "upload.received",
+            upload_id=upload.id,
+            workspace_id=workspace_id,
+            mime_type=mime_type,
+            size_bytes=len(content),
+        )
         try:
             self._upload_queue.enqueue(upload.id)
         except Exception:  # noqa: BLE001 - the stale-upload sweep re-enqueues it
-            logger.exception("Could not enqueue upload %s; the sweep will retry", upload.id)
+            log_event(
+                logger,
+                "upload.enqueue.failed",
+                f"Could not enqueue upload {upload.id}; the sweep will retry",
+                level=logging.WARNING,
+                exc_info=True,
+                upload_id=upload.id,
+            )
         return upload

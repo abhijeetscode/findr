@@ -1,8 +1,13 @@
+import logging
+
 from findr.domain.exceptions import DocumentNotFound
+from findr.observability import log_event
 from findr.ports.document_repository import DocumentRepository
 from findr.ports.file_storage import FileStorage
 from findr.ports.search_index import SearchIndex
 from findr.ports.uploaded_file_repository import UploadedFileRepository
+
+logger = logging.getLogger(__name__)
 
 
 class DeleteDocument:
@@ -38,3 +43,10 @@ class DeleteDocument:
         # rather than a row pointing at a file that's already gone.
         if uploaded_file is not None:
             self._file_storage.delete(uploaded_file.storage_path)
+        log_event(
+            logger,
+            "document.deleted",
+            document_id=document_id,
+            connection_id=document.connection_id,
+            upload_id=uploaded_file.id if uploaded_file is not None else None,
+        )

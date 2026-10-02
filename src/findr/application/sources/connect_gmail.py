@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import secrets
 
 from findr.domain.entities import SourceConnection
 from findr.domain.exceptions import InvalidOAuthState, SourceInOtherWorkspace
 from findr.domain.value_objects import ConnectionStatus, SourceType
+from findr.observability import log_event
 from findr.ports.credential_store import CredentialStore
 from findr.ports.oauth_provider import OAuthProvider
 from findr.ports.oauth_state_repository import OAuthStateRepository
 from findr.ports.source_connection_repo import SourceConnectionRepository
 from findr.ports.workspace_repository import WorkspaceRepository
+
+logger = logging.getLogger(__name__)
 
 # How long the user has to complete Google's consent screen before the
 # state/PKCE pair expires and the callback is rejected.
@@ -81,6 +85,7 @@ class CompleteGmailConnect:
             raise SourceInOtherWorkspace(
                 f"This Gmail account is already connected in workspace {other_name!r}"
             )
+        reconnect = connection is not None
         if connection is None:
             connection = self._connection_repo.create(
                 oauth_state.user_id,
@@ -100,5 +105,15 @@ class CompleteGmailConnect:
             credentials.access_token,
             credentials.refresh_token,
             credentials.expires_at,
+        )
+        # Ids only, never the Gmail address (specs/logging-telemetry.md §8).
+        log_event(
+            logger,
+            "source.connected",
+            source_type=SourceType.GMAIL.value,
+            connection_id=connection.id,
+            user_id=oauth_state.user_id,
+            workspace_id=oauth_state.workspace_id,
+            reconnect=reconnect,
         )
         return connection

@@ -59,6 +59,15 @@ class Settings(BaseSettings):
         default=0.4, validation_alias="FINDR_SEMANTIC_MIN_SIMILARITY"
     )
 
+    # Logging goes to files only, one per process (specs/logging-telemetry.md
+    # §4.6). docker-compose.yml points the directory at its logs volume.
+    log_dir: str = Field(default="./data/logs", validation_alias="FINDR_LOG_DIR")
+    log_level: str = Field(default="DEBUG", validation_alias="FINDR_LOG_LEVEL")
+    # Separate level for noisy third-party libraries (observability.setup.LIBRARY_LOGGERS).
+    log_level_libs: str = Field(default="WARNING", validation_alias="FINDR_LOG_LEVEL_LIBS")
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, validation_alias="FINDR_LOG_MAX_BYTES")
+    log_backup_count: int = Field(default=5, validation_alias="FINDR_LOG_BACKUP_COUNT")
+
     # There's no public sign-up; the app seeds a single fixed demo account on
     # startup (see app.py's lifespan) rather than exposing a /auth/register
     # endpoint. Override via env if you don't want the published defaults.

@@ -1,5 +1,6 @@
 import hashlib
 import math
+import os
 import re
 import uuid
 from collections.abc import Iterator
@@ -16,6 +17,19 @@ from findr.adapters.outbound.postgres.models import Base
 
 TEST_DATABASE_URL = "postgresql+psycopg://findr:findr@localhost:5432/findr_test"
 TEST_ELASTICSEARCH_URL = "http://localhost:9200"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _log_dir(tmp_path_factory) -> Iterator[None]:
+    """Anything that calls configure_logging (app startup, the worker, the
+    reindex script) writes into a temp dir, never data/logs/."""
+    previous = os.environ.get("FINDR_LOG_DIR")
+    os.environ["FINDR_LOG_DIR"] = str(tmp_path_factory.mktemp("logs"))
+    yield
+    if previous is None:
+        os.environ.pop("FINDR_LOG_DIR", None)
+    else:
+        os.environ["FINDR_LOG_DIR"] = previous
 
 
 class FakeEmbeddingProvider:

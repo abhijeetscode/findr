@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import io
+import logging
+import time
 from importlib.metadata import version
 
 from findr.adapters.outbound.files.mime_types import DOCX, MARKDOWN, PDF, TEXT
 from findr.domain.entities import ChunkMetadata, DocumentChunk, ParsedDocument
 from findr.domain.exceptions import ExtractionFailed, UnsupportedFileType
 from findr.domain.value_objects import ChunkKind
+from findr.observability import log_event
+from findr.observability.setup import reclaim_console_handlers
+from findr.observability.events import elapsed_ms
+
+logger = logging.getLogger(__name__)
 
 # chunk_by_title parameters — see specs/upload-chunking.md §6.2. Bump
 # CHUNKING_VERSION whenever these or the partition settings change, so
@@ -50,6 +57,10 @@ class UnstructuredDocumentParser:
         from unstructured_inference.models import tables
         from unstructured_inference.models.base import get_model
 
+        # transformers/huggingface_hub (pulled in above) attach console
+        # handlers on import; send them to the log file before the model
+        # loads log anything (specs/logging-telemetry.md §4.7).
+        reclaim_console_handlers()
         get_model()
         tables.load_agent()
         spacy.load("en_core_web_sm")
@@ -62,7 +73,9 @@ class UnstructuredDocumentParser:
         document_version: int,
         workspace_id: int,
     ) -> ParsedDocument:
+        start = time.perf_counter()
         elements = self._partition(content, mime_type)
+        partition_ms = elapsed_ms(start)
 
         text = "\n\n".join(el.text.strip() for el in elements if el.text and el.text.strip())
         if not text:
@@ -100,6 +113,24 @@ class UnstructuredDocumentParser:
             )
         if not chunks:
             raise ExtractionFailed(NO_TEXT_MESSAGE)
+        pages = [
+            el.metadata.page_number
+            for el in elements
+            if getattr(el.metadata, "page_number", None) is not None
+        ]
+        # Ids, counts and timings only, never the filename
+        # (specs/logging-telemetry.md §8).
+        log_event(
+            logger,
+            "parser.parsed",
+            level=logging.DEBUG,
+            mime_type=mime_type,
+            partition_ms=partition_ms,
+            elements=len(elements),
+            chunks=len(chunks),
+            table_chunks=sum(1 for c in chunks if c.kind == ChunkKind.TABLE),
+            pages=max(pages) if pages else None,
+        )
         return ParsedDocument(text=text, chunks=chunks)
 
     def _partition(self, content: bytes, mime_type: str) -> list:

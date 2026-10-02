@@ -28,10 +28,10 @@ RUN apt-get update \
 # --create-home: libraries used by unstructured (fontconfig, matplotlib)
 # write caches under ~/.cache.
 RUN groupadd --system findr && useradd --system --create-home --gid findr findr
-# Mount points for the uploads and model-cache volumes (docker-compose.yml),
+# Mount points for the uploads, model-cache and logs volumes (docker-compose.yml),
 # created and chowned here so the named volumes inherit findr ownership —
 # otherwise they'd mount root-owned and unwritable by the app user.
-RUN mkdir -p /data/uploads /data/hf-cache && chown -R findr:findr /data
+RUN mkdir -p /data/uploads /data/hf-cache /data/logs && chown -R findr:findr /data
 # The findr user is a --system user with no home directory, so point the
 # Hugging Face cache at the volume. The embedding model (~1.2GB) downloads
 # there on first startup and is reused across restarts and rebuilds.

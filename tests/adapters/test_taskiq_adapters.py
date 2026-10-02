@@ -10,14 +10,32 @@ from findr.adapters.taskiq.broker import IDLE_TIMEOUT_MS, XREAD_COUNT, create_br
 from findr.adapters.taskiq.upload_queue_taskiq import TaskiqUploadQueue
 from findr.application.uploads.process_upload import Outcome
 from findr.config import Settings
+from findr.observability import bind, current_fields
 
 
 class RecordingTask:
+    """Stands in for a Taskiq task: records what was sent, with its labels."""
+
     def __init__(self) -> None:
         self.sent: list[int] = []
+        self.labels: list[dict] = []
+
+    def kicker(self) -> "RecordingKicker":
+        return RecordingKicker(self)
+
+
+class RecordingKicker:
+    def __init__(self, task: RecordingTask) -> None:
+        self._task = task
+        self._labels: dict = {}
+
+    def with_labels(self, **labels) -> "RecordingKicker":
+        self._labels.update(labels)
+        return self
 
     async def kiq(self, upload_id: int) -> None:
-        self.sent.append(upload_id)
+        self._task.sent.append(upload_id)
+        self._task.labels.append(dict(self._labels))
 
 
 def test_broker_consumer_settings(monkeypatch):
@@ -44,27 +62,69 @@ def test_upload_queue_enqueues_from_a_non_async_thread():
 
     asyncio.run(main())
     assert task.sent == [42]
+    assert task.labels == [{}]
+
+
+def test_upload_queue_sends_the_callers_request_id_as_a_label():
+    # specs/logging-telemetry.md §5: the worker's log lines for an upload
+    # share the id of the request that enqueued it.
+    task = RecordingTask()
+
+    async def main() -> None:
+        queue = TaskiqUploadQueue(task, asyncio.get_running_loop())
+        with bind(request_id="req-123"):
+            await asyncio.to_thread(queue.enqueue, 42)
+
+    asyncio.run(main())
+    assert task.labels == [{"request_id": "req-123"}]
 
 
 def test_worker_task_reenqueues_on_retry_and_not_otherwise(monkeypatch):
-    sent: list[int] = []
+    sent: list[tuple[int, str]] = []
     outcomes = iter([Outcome.RETRY, Outcome.READY, Outcome.FAILED, Outcome.SKIPPED])
 
-    async def fake_kiq(upload_id):
-        sent.append(upload_id)
+    async def fake_requeue(upload_id, request_id):
+        sent.append((upload_id, request_id))
 
     async def no_sleep(_seconds):
         return None
 
     monkeypatch.setattr(tasks, "run_process_upload", lambda resources, upload_id: next(outcomes))
-    monkeypatch.setattr(tasks.process_upload, "kiq", fake_kiq)
+    monkeypatch.setattr(tasks, "_requeue", fake_requeue)
     monkeypatch.setattr(tasks.asyncio, "sleep", no_sleep)
-    context = SimpleNamespace(state=SimpleNamespace(resources=object()))
+    context = SimpleNamespace(
+        state=SimpleNamespace(resources=object()),
+        message=SimpleNamespace(labels={"request_id": "req-abc"}),
+    )
 
     for _ in range(4):
         asyncio.run(tasks.process_upload.original_func(7, context=context))
 
-    assert sent == [7]
+    # The retry keeps the original request id.
+    assert sent == [(7, "req-abc")]
+
+
+def test_worker_binds_the_request_id_label_for_the_job(monkeypatch):
+    seen: list[dict] = []
+
+    def fake_run(resources, upload_id):
+        seen.append(current_fields())
+        return Outcome.READY
+
+    monkeypatch.setattr(tasks, "run_process_upload", fake_run)
+    labelled = SimpleNamespace(
+        state=SimpleNamespace(resources=object()),
+        message=SimpleNamespace(labels={"request_id": "req-abc"}),
+    )
+    unlabelled = SimpleNamespace(state=SimpleNamespace(resources=object()))
+
+    asyncio.run(tasks.process_upload.original_func(7, context=labelled))
+    asyncio.run(tasks.process_upload.original_func(8, context=unlabelled))
+
+    assert seen[0] == {"request_id": "req-abc", "upload_id": 7}
+    # No label (e.g. enqueued before this change): a fresh id, never none.
+    assert seen[1]["request_id"].startswith("upload-")
+    assert seen[1]["upload_id"] == 8
 
 
 def test_worker_runs_the_blocking_job_off_the_event_loop(monkeypatch):

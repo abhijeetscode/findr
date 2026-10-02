@@ -1,6 +1,11 @@
+import logging
+
 from findr.domain.entities import Workspace
 from findr.domain.exceptions import DuplicateWorkspaceName, InvalidWorkspaceName, WorkspaceNotFound
+from findr.observability import log_event
 from findr.ports.workspace_repository import WorkspaceRepository
+
+logger = logging.getLogger(__name__)
 
 MAX_NAME_LENGTH = 100
 
@@ -45,7 +50,11 @@ class CreateWorkspace:
         name = _clean_name(name)
         if self._workspaces.get_by_name(user_id, name) is not None:
             raise DuplicateWorkspaceName(f"You already have a workspace named {name!r}")
-        return self._workspaces.create(user_id, name)
+        workspace = self._workspaces.create(user_id, name)
+        # The id only: a workspace's name is the client's name
+        # (specs/logging-telemetry.md §8).
+        log_event(logger, "workspace.created", workspace_id=workspace.id)
+        return workspace
 
 
 class RenameWorkspace:
@@ -61,4 +70,5 @@ class RenameWorkspace:
         if name != workspace.name:
             self._workspaces.rename(workspace_id, name)
             workspace.name = name
+            log_event(logger, "workspace.renamed", workspace_id=workspace_id)
         return workspace

@@ -33,9 +33,6 @@ dependencies = [
     "en-core-web-sm==3.8.0",
 ]
 
-[project.scripts]
-findr = "findr:main"
-
 [dependency-groups]
 dev = [
     "pytest>=8.3",

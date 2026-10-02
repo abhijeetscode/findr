@@ -10,6 +10,7 @@ from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import Ela
 from findr.adapters.outbound.files.local_file_storage import LocalFileStorage
 from findr.config import Settings
 from findr.domain.entities import User, Workspace
+from findr.observability import add_fields
 from findr.ports.upload_queue import UploadQueue
 
 SESSION_COOKIE_NAME = "findr_session"
@@ -61,6 +62,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db_session)) ->
     user = UserRepositoryPostgres(db).get_by_id(user_id) if user_id is not None else None
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    # On every log line for the rest of this request (specs/logging-telemetry.md §5).
+    add_fields(user_id=user.id)
     return user
 
 
@@ -79,6 +82,8 @@ def get_workspace(
     from findr.domain.exceptions import WorkspaceNotFound
 
     try:
-        return GetWorkspace(WorkspaceRepositoryPostgres(db)).execute(workspace_id, user.id)
+        workspace = GetWorkspace(WorkspaceRepositoryPostgres(db)).execute(workspace_id, user.id)
     except WorkspaceNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found") from exc
+    add_fields(workspace_id=workspace.id)
+    return workspace

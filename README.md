@@ -24,6 +24,7 @@ src/findr/
     inbound/http/   FastAPI app and routers (serves the UI at /)
     outbound/       Postgres, Elasticsearch, Gmail, embeddings, file storage, crypto, scheduler
     taskiq/         upload queue + worker tasks
+  observability/ logging setup, request context, timing helpers
 ```
 
 Runtime services:
@@ -117,6 +118,31 @@ Postgres is the source of truth. To rebuild the Elasticsearch index from it (fre
 ```bash
 uv run python scripts/reindex_search.py
 ```
+
+It prints nothing; the result is the `reindex.completed` line in `data/logs/reindex.log`.
+
+## Logs
+
+Logs go to files only — nothing is printed to the console once the app has started (`specs/logging-telemetry.md`). Each process writes its own file, one JSON object per line, rotated at 10MB with 5 old files kept:
+
+| Process | File |
+|---|---|
+| API | `data/logs/api.log` |
+| Worker | `data/logs/worker-<hostname>.log` (one per worker) |
+| Reindex script | `data/logs/reindex.log` |
+
+In dev Docker and on the host the files land in `data/logs/`; the production-style compose file keeps them on the `findr_logs_data` volume. `FINDR_LOG_LEVEL` defaults to `DEBUG` (set `INFO` to quiet it down); see `.env.example` for the other settings.
+
+Every line carries `request_id`, and `user_id`/`workspace_id` where known. An upload's worker lines share the id of the request that uploaded it, so one request can be followed across files. Useful `jq` recipes:
+
+```bash
+tail -f data/logs/api.log | jq .                                      # follow the API
+jq 'select(.request_id=="<id>")' data/logs/*.log                      # one request, API + worker
+jq 'select(.event=="search.executed" and .duration_ms>1000)' data/logs/api.log   # slow searches
+jq 'select(.level=="ERROR" or .level=="WARNING")' data/logs/*.log     # problems
+```
+
+Every response has an `X-Request-ID` header to search for. Logs never contain search text, file names, workspace names, Gmail addresses or document content. If a container won't start, `docker compose logs <service>` still shows the crash.
 
 ## Tests
 

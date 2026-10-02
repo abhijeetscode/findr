@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
 
 from elasticsearch import Elasticsearch
@@ -7,7 +9,11 @@ from elasticsearch.helpers import bulk
 
 from findr.domain.entities import Document, DocumentChunk, SearchHit
 from findr.domain.value_objects import SourceType
+from findr.observability import log_event
+from findr.observability.events import elapsed_ms
 from findr.ports.embedding_provider import EmbeddingProvider
+
+logger = logging.getLogger(__name__)
 
 _SNIPPET_FIELDS = ("body_text", "subject", "sender")
 _SNIPPET_LENGTH = 200
@@ -104,10 +110,13 @@ class ElasticsearchIndex:
             "_source": source_filter,
             "size": _RESULT_SIZE,
         }
+        start = time.perf_counter()
+        query_vector = self._embedding_provider.embed_query(query)
+        embed_ms = elapsed_ms(start)
         knn_body = {
             "knn": {
                 "field": "chunks.embedding",
-                "query_vector": self._embedding_provider.embed_query(query),
+                "query_vector": query_vector,
                 "k": _RESULT_SIZE,
                 "num_candidates": _KNN_NUM_CANDIDATES,
                 "similarity": self._min_similarity,
@@ -137,6 +146,16 @@ class ElasticsearchIndex:
             if "error" in leg:
                 raise RuntimeError(f"Elasticsearch search failed: {leg['error']}")
             legs.append(leg["hits"]["hits"])
+        # Adapter-level detail behind search.executed (specs/logging-telemetry.md §6).
+        log_event(
+            logger,
+            "search_index.searched",
+            level=logging.DEBUG,
+            embed_ms=embed_ms,
+            es_ms=max((leg.get("took", 0) for leg in response["responses"]), default=0),
+            keyword_hits=len(legs[0]),
+            semantic_hits=len(legs[1]),
+        )
 
         matched_chunks = {raw["_id"]: _best_chunk_text(raw) for raw in legs[1]}
 
@@ -181,6 +200,7 @@ class ElasticsearchIndex:
         if not documents:
             return
         embed = source_type in EMBEDDED_SOURCE_TYPES
+        start = time.perf_counter()
         actions = [
             {
                 "_index": self._index,
@@ -189,7 +209,19 @@ class ElasticsearchIndex:
             }
             for doc in documents
         ]
+        embed_ms = elapsed_ms(start)
+        start = time.perf_counter()
         bulk(self._client, actions, refresh=True)
+        log_event(
+            logger,
+            "search_index.indexed",
+            level=logging.DEBUG,
+            source_type=source_type.value,
+            documents=len(documents),
+            chunks=sum(len(doc.chunks) for doc in documents) if embed else 0,
+            embed_ms=embed_ms,
+            bulk_ms=elapsed_ms(start),
+        )
 
     def _to_source(
         self,

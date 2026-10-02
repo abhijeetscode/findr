@@ -9,9 +9,13 @@ services:
     # the worker).
     volumes:
       - ./src:/app/src
+      # Log files readable on the host at data/logs/ (in place of the
+      # findr_logs_data volume).
+      - ./data/logs:/data/logs
   app:
     volumes:
       - ./src:/app/src
+      - ./data/logs:/data/logs
     command:
       [
         "uvicorn",
