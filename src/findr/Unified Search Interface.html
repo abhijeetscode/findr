@@ -133,6 +133,21 @@ a.result-card:hover {
   font-size: 11px; font-weight: 600; color: #5B5748; background: #F1EEE6;
   border-radius: 6px; padding: 3px 8px;
 }
+.pager {
+  display: flex; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap;
+  padding: 8px 0 4px;
+}
+.pager button {
+  min-width: 34px; height: 34px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid #ECE8DC; background: #fff; color: #3F3C33;
+  font-size: 13px; font-family: inherit; cursor: pointer;
+}
+.pager button:hover:not(:disabled) { border-color: #C7C2B3; }
+.pager button[aria-current="page"] {
+  background: #C1502E; border-color: #C1502E; color: #fff; font-weight: 600; cursor: default;
+}
+.pager button:disabled:not([aria-current]) { color: #C7C2B3; cursor: default; }
+.pager .pager-gap { min-width: 20px; text-align: center; color: #8E8B80; font-size: 13px; }
 .empty-state {
   font-size: 13px; color: #8E8B80; padding: 28px; text-align: center;
   background: #fff; border: 1px dashed #E1DDD1; border-radius: 12px;
@@ -464,6 +479,8 @@ a.result-card:hover {
       <div class="results">
         <div id="results-summary" style="font-size:13px; color:#8E8B80;">Search across your connected sources</div>
         <div id="results-list"></div>
+        <!-- Numbered pages — see specs/search-pagination.md §6. -->
+        <nav id="results-pager" class="pager hidden" aria-label="Search result pages"></nav>
       </div>
 
       <!-- FILTERS — hidden: none of these controls are wired to search yet
@@ -593,6 +610,12 @@ a.result-card:hover {
 
   // ---------- state ----------
   var state = { sources: [], workspaces: [], workspaceId: null };
+  // The query and page currently shown (specs/search-pagination.md §6).
+  var currentSearch = { query: null, page: 1 };
+  // Bumped by every search request and every clear: only the latest
+  // request's response may render, so fast typing or page clicks never
+  // show stale results.
+  var searchSeq = 0;
 
   // ---------- workspaces (specs/workspaces.md §7) ----------
   // The current workspace is remembered in this browser only as a
@@ -663,7 +686,7 @@ a.result-card:hover {
     if (switched) {
       // Nothing from the previous client stays on screen.
       $("q").value = "";
-      renderResults(null);
+      clearSearch();
       state.sources = [];
       renderSidebarSources();
       renderSourceRowPills();
@@ -808,7 +831,7 @@ a.result-card:hover {
     var avatar = $("user-avatar");
     avatar.textContent = initials(user.email);
     avatar.title = user.email + " — click to log out";
-    renderResults(null);
+    clearSearch();
     showConnectError();
     loadWorkspaces();
   }
@@ -974,27 +997,28 @@ a.result-card:hover {
   });
 
   // ---------- search ----------
-  function renderResults(hits) {
+  // `body` is one page of the search API's response (results plus page
+  // totals), or null for the empty "nothing searched yet" state.
+  function renderResults(body) {
     var summary = $("results-summary");
     var list = $("results-list");
 
-    if (hits === null) {
+    if (body === null) {
       summary.textContent = "Search across your connected sources";
       list.innerHTML = "";
+      renderPager(null);
       return;
     }
 
-    if (hits.length === 0) {
+    var hits = body.results;
+    renderPager(body);
+    if (body.total === 0) {
       summary.textContent = "No results";
       list.innerHTML = '<div class="empty-state">No matches. Try a different search term.</div>';
       return;
     }
 
-    var sourceCount = {};
-    hits.forEach(function (h) { sourceCount[h.source_type] = true; });
-    var sourceTotal = Object.keys(sourceCount).length;
-    summary.textContent = hits.length + (hits.length === 1 ? " result" : " results") +
-      " across " + sourceTotal + (sourceTotal === 1 ? " source" : " sources");
+    summary.textContent = resultsSummary(body);
 
     list.innerHTML = hits.map(function (hit) {
       var meta = sourceMeta(hit.source_type);
@@ -1040,6 +1064,64 @@ a.result-card:hover {
     });
   }
 
+  // "12 results" for one page; "Showing 21–40 of 137 results" otherwise,
+  // with "200+" when there are more matches than can be paged through.
+  function resultsSummary(body) {
+    var totalText = body.total + (body.total_is_capped ? "+" : "");
+    if (body.total_pages <= 1) {
+      return totalText + (body.total === 1 ? " result" : " results");
+    }
+    var first = (body.page - 1) * body.page_size + 1;
+    var last = first + body.results.length - 1;
+    return "Showing " + first + "\u2013" + last + " of " + totalText + " results";
+  }
+
+  // Page numbers to show: the first, the last, and the current page ±2,
+  // with null marking a gap. E.g. (6, 10) -> [1, null, 4, 5, 6, 7, 8, null, 10].
+  function pagerNumbers(current, totalPages) {
+    var numbers = [];
+    for (var n = 1; n <= totalPages; n++) {
+      if (n === 1 || n === totalPages || Math.abs(n - current) <= 2) {
+        if (numbers.length && n - numbers[numbers.length - 1] > 1) numbers.push(null);
+        numbers.push(n);
+      }
+    }
+    return numbers;
+  }
+
+  function renderPager(body) {
+    var pager = $("results-pager");
+    if (!body || body.total_pages <= 1) {
+      pager.classList.add("hidden");
+      pager.innerHTML = "";
+      return;
+    }
+    var page = body.page;
+    var last = body.total_pages;
+    function button(label, target, attrs) {
+      return '<button type="button" data-page="' + target + '"' + (attrs || "") + '>' + label + '</button>';
+    }
+    var html = button("\u2039 Prev", page - 1, ' aria-label="Previous page"' + (page <= 1 ? " disabled" : ""));
+    pagerNumbers(page, last).forEach(function (n) {
+      if (n === null) {
+        html += '<span class="pager-gap" aria-hidden="true">\u2026</span>';
+      } else if (n === page) {
+        html += button(String(n), n, ' aria-current="page" aria-label="Page ' + n + ', current page" disabled');
+      } else {
+        html += button(String(n), n, ' aria-label="Page ' + n + '"');
+      }
+    });
+    html += button("Next \u203a", page + 1, ' aria-label="Next page"' + (page >= last ? " disabled" : ""));
+    pager.innerHTML = html;
+    pager.classList.remove("hidden");
+    Array.prototype.forEach.call(pager.querySelectorAll("button[data-page]"), function (btn) {
+      btn.addEventListener("click", function () {
+        if (btn.disabled) return;
+        runSearch(currentSearch.query, Number(btn.getAttribute("data-page")), true);
+      });
+    });
+  }
+
   // [3, 4, 5, 12] -> "3–5, 12". Pages arrive sorted and deduplicated.
   function formatPages(pages) {
     var parts = [];
@@ -1059,9 +1141,11 @@ a.result-card:hover {
     });
   }
 
+  // Re-runs the search after something changed (e.g. a deletion), staying
+  // on the current page when the query hasn't changed.
   function refreshSearch() {
     var value = $("q").value.trim();
-    if (value) runSearch(value);
+    if (value) runSearch(value, value === currentSearch.query ? currentSearch.page : 1);
   }
 
   // ---------- uploads ----------
@@ -1151,20 +1235,41 @@ a.result-card:hover {
     });
   }
 
-  function runSearch(query) {
+  // One page of results (specs/search-pagination.md §6). `scrollToTop`:
+  // after a page change, bring the top of the results back into view.
+  function runSearch(query, page, scrollToTop) {
     var workspaceId = state.workspaceId;
     if (!workspaceId) return;
-    api(ws("/search?q=" + encodeURIComponent(query))).then(handleScopedResponse).then(function (body) {
-      if (body && stillCurrent(workspaceId)) renderResults(body.results);
+    page = page || 1;
+    var seq = ++searchSeq;
+    var path = "/search?q=" + encodeURIComponent(query) + "&page=" + page;
+    api(ws(path)).then(handleScopedResponse).then(function (body) {
+      if (!body || !stillCurrent(workspaceId) || seq !== searchSeq) return;
+      // Past the end (results shrank since the pager was drawn): go to the
+      // last page instead of showing an empty one.
+      if (body.results.length === 0 && body.total_pages > 0 && page > body.total_pages) {
+        runSearch(query, body.total_pages, scrollToTop);
+        return;
+      }
+      currentSearch = { query: query, page: body.page };
+      renderResults(body);
+      if (scrollToTop) $("results-summary").scrollIntoView({ block: "start" });
     });
+  }
+
+  function clearSearch() {
+    searchSeq++;
+    currentSearch = { query: null, page: 1 };
+    renderResults(null);
   }
 
   var searchTimer = null;
   $("q").addEventListener("input", function () {
     window.clearTimeout(searchTimer);
     var value = $("q").value.trim();
-    if (!value) { renderResults(null); return; }
-    searchTimer = window.setTimeout(function () { runSearch(value); }, 300);
+    if (!value) { clearSearch(); return; }
+    // A new query always starts on page 1.
+    searchTimer = window.setTimeout(function () { runSearch(value, 1); }, 300);
   });
 
   checkAuth();

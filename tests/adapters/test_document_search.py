@@ -75,8 +75,8 @@ def test_search_is_isolated_per_user(es_client, es_index, fake_embedding_provide
     )
 
     use_case = SearchDocuments(search_index)
-    a_hits = use_case.execute(1, WS, "renewal")
-    b_hits = use_case.execute(2, WS, "renewal")
+    a_hits = use_case.execute(1, WS, "renewal").hits
+    b_hits = use_case.execute(2, WS, "renewal").hits
 
     assert len(a_hits) == 1
     assert a_hits[0].document.user_id == 1
@@ -119,11 +119,11 @@ def test_upsert_dedups_on_document_id(es_client, es_index, fake_embedding_provid
     )
 
     search = SearchDocuments(search_index)
-    new_hits = search.execute(1, WS, "new")
+    new_hits = search.execute(1, WS, "new").hits
     assert len(new_hits) == 1
     assert new_hits[0].document.subject == "New subject"
 
-    assert search.execute(1, WS, "old") == []
+    assert search.execute(1, WS, "old").hits == []
 
 
 def test_delete_documents_removes_from_search(es_client, es_index, fake_embedding_provider):
@@ -145,11 +145,11 @@ def test_delete_documents_removes_from_search(es_client, es_index, fake_embeddin
     )
 
     search = SearchDocuments(search_index)
-    assert len(search.execute(1, WS, "trashed")) == 1
+    assert len(search.execute(1, WS, "trashed").hits) == 1
 
     search_index.delete_documents(connection_id=1, external_ids=["msg-1"])
 
-    assert search.execute(1, WS, "trashed") == []
+    assert search.execute(1, WS, "trashed").hits == []
 
 
 def test_thread_id_round_trips_through_index_and_search(es_client, es_index, fake_embedding_provider):
@@ -181,7 +181,7 @@ def test_thread_id_round_trips_through_index_and_search(es_client, es_index, fak
     )
 
     search = SearchDocuments(search_index)
-    hits = search.execute(1, WS, "renewal")
+    hits = search.execute(1, WS, "renewal").hits
 
     assert len(hits) == 1
     assert hits[0].document.thread_id == "thread-abc"
@@ -208,7 +208,7 @@ def test_search_highlights_matches_with_bracket_markers(es_client, es_index, fak
         WS,
     )
 
-    hits = SearchDocuments(search_index).execute(1, WS, "renewal")
+    hits = SearchDocuments(search_index).execute(1, WS, "renewal").hits
 
     assert len(hits) == 1
     assert "[renewal]" in hits[0].snippet.lower()
@@ -233,7 +233,7 @@ def test_query_with_special_characters_does_not_error(es_client, es_index, fake_
     )
 
     search = SearchDocuments(search_index)
-    hits = search.execute(1, WS, 'terms: "24" -months*')
+    hits = search.execute(1, WS, 'terms: "24" -months*').hits
 
     assert isinstance(hits, list)  # must not raise a query-syntax error
 
@@ -276,7 +276,7 @@ def test_semantic_match_on_a_chunk_uses_it_as_the_snippet(
     )
     search_index.index_documents([upload], SourceType.FILE, None, WS)
 
-    hits = SearchDocuments(search_index).execute(1, WS, "zebra migration")
+    hits = SearchDocuments(search_index).execute(1, WS, "zebra migration").hits
 
     assert [h.document.external_id for h in hits] == ["upload-1"]
     assert hits[0].snippet == "zebra migration"
@@ -310,7 +310,7 @@ def test_semantic_search_is_isolated_per_user_and_ignores_non_upload_vectors(
         },
     )
 
-    assert SearchDocuments(search_index).execute(1, WS, "zebra migration") == []
+    assert SearchDocuments(search_index).execute(1, WS, "zebra migration").hits == []
 
 
 def test_keyword_search_still_finds_uploads_and_email(
@@ -328,7 +328,7 @@ def test_keyword_search_still_finds_uploads_and_email(
         SourceType.FILE, None, WS,
     )
 
-    hits = SearchDocuments(search_index).execute(1, WS, "INV-2291")
+    hits = SearchDocuments(search_index).execute(1, WS, "INV-2291").hits
 
     assert {h.source_type for h in hits} == {SourceType.GMAIL, SourceType.FILE}
     assert all("[" in h.snippet for h in hits)
@@ -344,7 +344,7 @@ def test_upload_without_chunks_stays_keyword_only(es_client, es_index, fake_embe
     )
 
     assert "chunks" not in es_client.get(index=es_index, id="1")["_source"]
-    assert [h.document.external_id for h in SearchDocuments(search_index).execute(1, WS, "lunch")] == ["u-1"]
+    assert [h.document.external_id for h in SearchDocuments(search_index).execute(1, WS, "lunch").hits] == ["u-1"]
 
 
 def test_semantic_search_finds_a_passage_deep_in_a_long_upload(
@@ -365,7 +365,7 @@ def test_semantic_search_finds_a_passage_deep_in_a_long_upload(
         SourceType.FILE, None, WS,
     )
 
-    hits = SearchDocuments(search_index).execute(1, WS, "renewal pricing")
+    hits = SearchDocuments(search_index).execute(1, WS, "renewal pricing").hits
 
     assert [h.document.external_id for h in hits] == ["upload-1"]
     assert hits[0].snippet.startswith("The subscription cost")
@@ -418,13 +418,13 @@ def test_search_never_crosses_workspaces(es_client, es_index, fake_embedding_pro
         )
     search = SearchDocuments(search_index)
 
-    keyword = search.execute(1, 100, "report")
-    semantic = search.execute(1, 200, "zebra migration report")
+    keyword = search.execute(1, 100, "report").hits
+    semantic = search.execute(1, 200, "zebra migration report").hits
 
     assert [h.document.external_id for h in keyword] == ["upload-1"]
     assert keyword[0].document.workspace_id == 100
     assert [h.document.external_id for h in semantic] == ["upload-2"]
-    assert search.execute(1, 300, "report") == []
+    assert search.execute(1, 300, "report").hits == []
 
 
 def test_chunks_carry_the_workspace_in_their_metadata(
@@ -457,8 +457,8 @@ def test_delete_workspace_removes_only_that_workspaces_documents(
     search_index.delete_workspace(100)
 
     search = SearchDocuments(search_index)
-    assert search.execute(1, 100, "renewal") == []
-    assert len(search.execute(1, 200, "renewal")) == 1
+    assert search.execute(1, 100, "renewal").hits == []
+    assert len(search.execute(1, 200, "renewal").hits) == 1
 
 
 # ---------- page numbers (specs/open-files-and-pdf-pages.md) ----------
@@ -489,7 +489,7 @@ def test_keyword_hit_lists_every_page_with_a_matching_chunk(
     )
     search_index.index_documents([upload], SourceType.FILE, None, WS)
 
-    hits = SearchDocuments(search_index).execute(1, WS, "renewal")
+    hits = SearchDocuments(search_index).execute(1, WS, "renewal").hits
 
     assert [h.document.external_id for h in hits] == ["upload-1"]
     assert hits[0].pages == [2, 3, 7]
@@ -506,7 +506,7 @@ def test_semantic_only_hit_lists_its_best_chunks_pages(
     )
     search_index.index_documents([upload], SourceType.FILE, None, WS)
 
-    hits = SearchDocuments(search_index).execute(1, WS, "zebra migration")
+    hits = SearchDocuments(search_index).execute(1, WS, "zebra migration").hits
 
     assert [h.document.external_id for h in hits] == ["upload-1"]
     assert hits[0].pages == [5, 6]
@@ -528,7 +528,7 @@ def test_hits_without_page_numbers_have_no_pages(
         SourceType.GMAIL, "a@gmail.com", WS,
     )
 
-    hits = SearchDocuments(search_index).execute(1, WS, "renewal")
+    hits = SearchDocuments(search_index).execute(1, WS, "renewal").hits
 
     assert sorted(h.document.external_id for h in hits) == ["m-1", "upload-1", "upload-2"]
     assert all(h.pages == [] for h in hits)
@@ -554,7 +554,8 @@ def test_page_clause_changes_neither_matches_nor_ranking(
     real_msearch = es_client.msearch
     es_client.msearch = lambda searches: sent.append(searches) or real_msearch(searches=searches)
     SearchDocuments(search_index).execute(1, WS, "the renewal terms")
-    bm25_body = sent[0][1]
+    # The details phase carries the page clause (specs/search-pagination.md §3).
+    bm25_body = sent[-1][1]
 
     def ranked(body):
         hits = es_client.search(index=es_index, query=body["query"], size=10)["hits"]["hits"]
@@ -609,7 +610,121 @@ def test_multi_word_query_lists_only_pages_with_every_word(
     )
     search_index.index_documents([upload], SourceType.FILE, None, WS)
 
-    hits = SearchDocuments(search_index).execute(1, WS, "the renewal")
+    hits = SearchDocuments(search_index).execute(1, WS, "the renewal").hits
 
     assert [h.document.external_id for h in hits] == ["upload-1"]
     assert hits[0].pages == [2]
+
+
+# ---------- paging (specs/search-pagination.md) ----------
+
+
+def _renewal_emails(count, *, user_id=1, start_id=1):
+    """Emails that all match "renewal", the earlier ones more strongly."""
+    return [
+        _make_document(
+            doc_id=start_id + i,
+            user_id=user_id,
+            connection_id=1,
+            external_id=f"msg-{start_id + i}",
+            subject=f"Email {start_id + i}",
+            body_text=" ".join(["renewal"] * (count - i) + ["filler words here"] * (i + 1)),
+        )
+        for i in range(count)
+    ]
+
+
+def _all_pages(search_index, query, *, page_size, max_results, user_id=1, workspace_id=WS):
+    hits, offset = [], 0
+    while True:
+        page = search_index.search(
+            user_id, workspace_id, query, offset=offset, limit=page_size, max_results=max_results
+        )
+        if not page.hits:
+            return hits
+        hits.extend(page.hits)
+        offset += page_size
+
+
+def _summary(hits):
+    return [(h.document.id, h.snippet, h.pages, round(h.score, 9)) for h in hits]
+
+
+def test_pages_are_consecutive_slices_of_one_ranking(
+    es_client, es_index, fake_embedding_provider, chunk_factory
+):
+    # Keyword-only emails, PDF uploads with pages (keyword + semantic), and
+    # an upload only semantic search finds: paging must give exactly the
+    # unpaged results, details included.
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    search_index.index_documents(_renewal_emails(6), SourceType.GMAIL, "a@gmail.com", WS)
+    search_index.index_documents(
+        [
+            _pdf_upload(10, {"renewal fee due": (2, 2), "budget": (3, 3)},
+                        chunk_factory=chunk_factory),
+            _pdf_upload(11, {"intro": (1, 1), "renewal deadline": (5, 6)},
+                        chunk_factory=chunk_factory),
+            _upload(12, ["renewal plan"], body_text="nothing to see",
+                    chunk_factory=chunk_factory),
+        ],
+        SourceType.FILE, None, WS,
+    )
+
+    unpaged = search_index.search(1, WS, "renewal", offset=0, limit=50, max_results=50)
+    paged = _all_pages(search_index, "renewal", page_size=4, max_results=50)
+
+    assert unpaged.total == 9
+    assert len(unpaged.hits) == 9
+    assert _summary(paged) == _summary(unpaged.hits)
+    by_id = {h.document.id: h for h in paged}
+    assert by_id[11].pages == [5, 6]
+    # Found by semantic search only: its chunk is the snippet.
+    assert by_id[12].snippet == "renewal plan"
+
+
+def test_total_counts_what_can_be_paged_and_flags_more(
+    es_client, es_index, fake_embedding_provider
+):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    search_index.index_documents(_renewal_emails(7), SourceType.GMAIL, "a@gmail.com", WS)
+
+    capped = search_index.search(1, WS, "renewal", offset=0, limit=3, max_results=5)
+    assert (capped.total, capped.total_is_capped, len(capped.hits)) == (5, True, 3)
+
+    everything = search_index.search(1, WS, "renewal", offset=0, limit=3, max_results=10)
+    assert (everything.total, everything.total_is_capped) == (7, False)
+    # The top results are the same whatever the window.
+    assert [h.document.id for h in capped.hits] == [h.document.id for h in everything.hits]
+
+
+def test_a_page_past_the_end_is_empty_with_real_totals(
+    es_client, es_index, fake_embedding_provider
+):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    search_index.index_documents(_renewal_emails(3), SourceType.GMAIL, "a@gmail.com", WS)
+
+    past = search_index.search(1, WS, "renewal", offset=20, limit=20, max_results=200)
+    assert (past.hits, past.total, past.total_is_capped) == ([], 3, False)
+
+    nothing = search_index.search(1, WS, "zzzz", offset=0, limit=20, max_results=200)
+    assert (nothing.hits, nothing.total) == ([], 0)
+
+
+def test_later_pages_stay_inside_the_user_and_workspace(
+    es_client, es_index, fake_embedding_provider
+):
+    search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
+    search_index.index_documents(_renewal_emails(5), SourceType.GMAIL, "a@gmail.com", WS)
+    search_index.index_documents(
+        _renewal_emails(5, user_id=2, start_id=100), SourceType.GMAIL, "b@gmail.com", WS
+    )
+    search_index.index_documents(
+        _renewal_emails(5, start_id=200), SourceType.GMAIL, "a@gmail.com", WS + 1
+    )
+
+    hits = _all_pages(search_index, "renewal", page_size=2, max_results=200)
+
+    assert sorted(h.document.id for h in hits) == [1, 2, 3, 4, 5]
+    assert search_index.search(
+        1, WS, "renewal", offset=0, limit=2, max_results=200
+    ).total == 5

@@ -1,9 +1,15 @@
+import math
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from findr.adapters.inbound.http.deps import get_search_index, get_workspace
 from findr.adapters.outbound.elasticsearch.search_index_elasticsearch import ElasticsearchIndex
-from findr.application.search.search_documents import SearchDocuments
+from findr.application.search.search_documents import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    SearchDocuments,
+)
 from findr.domain.entities import SearchHit, Workspace
 from findr.domain.value_objects import SourceType
 
@@ -35,23 +41,42 @@ class SearchHitResponse(BaseModel):
     score: float
     sent_at: str | None
     url: str | None
-    # Pages of a PDF the match is on; empty when unknown or not paged.
+    # Pages of a PDF the match is on; empty when unknown or not paged. Not
+    # to be confused with SearchResponse.page, the page of *results*.
     pages: list[int]
 
 
 class SearchResponse(BaseModel):
+    """One page of results — see specs/search-pagination.md §4."""
+
     results: list[SearchHitResponse]
+    page: int
+    page_size: int
+    # Results that can be paged through (at most 200).
+    total: int
+    total_pages: int
+    # More matches exist than can be paged through.
+    total_is_capped: bool
 
 
 @router.get("", response_model=SearchResponse)
 def search(
     q: str = Query(..., min_length=1),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     workspace: Workspace = Depends(get_workspace),
     search_index: ElasticsearchIndex = Depends(get_search_index),
 ) -> SearchResponse:
     use_case = SearchDocuments(search_index)
-    hits = use_case.execute(workspace.user_id, workspace.id, q)
+    # A page past the end comes back empty with the real totals, not an
+    # error: results can shrink between requests (spec §4).
+    results = use_case.execute(workspace.user_id, workspace.id, q, page, page_size)
     return SearchResponse(
+        page=page,
+        page_size=page_size,
+        total=results.total,
+        total_pages=math.ceil(results.total / page_size),
+        total_is_capped=results.total_is_capped,
         results=[
             SearchHitResponse(
                 document_id=hit.document.id,
@@ -65,6 +90,6 @@ def search(
                 url=_source_url(hit),
                 pages=hit.pages,
             )
-            for hit in hits
+            for hit in results.hits
         ]
     )

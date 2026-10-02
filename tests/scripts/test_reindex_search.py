@@ -63,7 +63,7 @@ def test_reindex_search_backfills_postgres_documents_into_elasticsearch(
     reindex_search.main()
 
     search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
-    hits = SearchDocuments(search_index).execute(user.id, connection.workspace_id, "renewal")
+    hits = SearchDocuments(search_index).execute(user.id, connection.workspace_id, "renewal").hits
     assert len(hits) == 1
     assert hits[0].document.subject == "Q3 renewal terms"
     assert hits[0].source_type == SourceType.GMAIL
@@ -111,5 +111,5 @@ def test_reindex_search_rebuilds_upload_chunk_vectors_from_postgres(
     # No file was re-parsed: the chunks came from document_chunks, and the
     # vectors make the second chunk semantically findable.
     search_index = ElasticsearchIndex(es_client, es_index, fake_embedding_provider)
-    hits = SearchDocuments(search_index).execute(user.id, connection.workspace_id, "zebra migration")
+    hits = SearchDocuments(search_index).execute(user.id, connection.workspace_id, "zebra migration").hits
     assert [h.document.external_id for h in hits] == ["upload-1"]

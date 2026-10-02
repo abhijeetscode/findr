@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from findr.adapters.inbound.http.app import app
@@ -150,3 +151,85 @@ def test_search_endpoint_serializes_documents_with_a_sent_at_timestamp(app_env):
 
         assert resp.status_code == 200
         assert resp.json()["results"][0]["sent_at"] == "2026-09-20T14:30:00"
+
+
+# ---------- paging (specs/search-pagination.md §4) ----------
+
+
+def _seed_emails(user_id: int, workspace_id: int, count: int) -> None:
+    db = app.state.session_factory()
+    try:
+        connection = SourceConnectionRepositoryPostgres(db).create(
+            user_id, workspace_id, SourceType.GMAIL, "a@gmail.com"
+        )
+        db.commit()
+        persisted = DocumentRepositoryPostgres(db).upsert_many(
+            [
+                Document(
+                    id=0,
+                    user_id=user_id,
+                    connection_id=connection.id,
+                    external_id=f"msg-{i}",
+                    subject=f"Renewal {i}",
+                    sender="x@y.com",
+                    recipients=None,
+                    body_text="renewal " * (count - i),
+                    sent_at=None,
+                )
+                for i in range(count)
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+    ElasticsearchIndex(
+        app.state.es_client, app.state.settings.elasticsearch_index, app.state.embedding_provider
+    ).index_documents(persisted, SourceType.GMAIL, "a@gmail.com", workspace_id)
+
+
+def test_search_is_served_in_pages_of_twenty(app_env):
+    with TestClient(app) as client:
+        a = _login_with_workspace(client)
+        _seed_emails(client.get("/auth/me").json()["id"], a, 45)
+
+        first = client.get(f"/workspaces/{a}/search", params={"q": "renewal"}).json()
+        third = client.get(f"/workspaces/{a}/search", params={"q": "renewal", "page": 3}).json()
+        small = client.get(
+            f"/workspaces/{a}/search", params={"q": "renewal", "page": 2, "page_size": 10}
+        ).json()
+
+    assert (first["page"], first["page_size"], first["total"], first["total_pages"]) == (
+        1, 20, 45, 3
+    )
+    assert first["total_is_capped"] is False
+    assert len(first["results"]) == 20
+    assert first["results"][0]["subject"] == "Renewal 0"
+    assert len(third["results"]) == 5
+    assert (small["total_pages"], [r["subject"] for r in small["results"]]) == (
+        5, [f"Renewal {i}" for i in range(10, 20)]
+    )
+    # Pages don't overlap.
+    seen = {r["document_id"] for r in first["results"]} & {r["document_id"] for r in third["results"]}
+    assert not seen
+
+
+def test_a_page_past_the_end_returns_the_totals(app_env):
+    with TestClient(app) as client:
+        a = _login_with_workspace(client)
+        _seed_emails(client.get("/auth/me").json()["id"], a, 3)
+
+        past = client.get(f"/workspaces/{a}/search", params={"q": "renewal", "page": 9})
+        none = client.get(f"/workspaces/{a}/search", params={"q": "nomatchatall"})
+
+    assert past.status_code == 200
+    assert past.json()["results"] == []
+    assert (past.json()["total"], past.json()["total_pages"]) == (3, 1)
+    assert (none.json()["total"], none.json()["total_pages"], none.json()["results"]) == (0, 0, [])
+
+
+@pytest.mark.parametrize("params", [{"page": 0}, {"page_size": 0}, {"page_size": 51}])
+def test_invalid_page_parameters_are_rejected(app_env, params):
+    with TestClient(app) as client:
+        a = _login_with_workspace(client)
+        resp = client.get(f"/workspaces/{a}/search", params={"q": "renewal", **params})
+    assert resp.status_code == 422
