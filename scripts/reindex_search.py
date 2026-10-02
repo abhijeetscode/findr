@@ -6,12 +6,15 @@ specs/upload-chunking.md §6.4). Run manually:
 
     uv run python scripts/reindex_search.py
 
-Not a scheduled job — an operator-triggered action.
+Not a scheduled job — an operator-triggered action. Prints nothing: the
+result is the `reindex.completed` event in <FINDR_LOG_DIR>/reindex.log.
 """
 
 from __future__ import annotations
 
+import logging
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -37,9 +40,14 @@ from findr.adapters.outbound.postgres.models import DocumentModel, SourceConnect
 from findr.domain.entities import Document  # noqa: E402
 from findr.domain.value_objects import SourceType  # noqa: E402
 from findr.config import Settings  # noqa: E402
+from findr.observability import bind, log_event, new_id  # noqa: E402
+from findr.observability.setup import configure_logging  # noqa: E402
+from findr.observability.events import elapsed_ms  # noqa: E402
 from findr.ports.embedding_provider import EmbeddingProvider  # noqa: E402
 
 BATCH_SIZE = 500
+
+logger = logging.getLogger("findr.scripts.reindex_search")
 
 
 def _to_document(row: DocumentModel) -> Document:
@@ -65,6 +73,15 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
 
 def main() -> None:
     settings = Settings()
+    # Logs go to <FINDR_LOG_DIR>/reindex.log, not the console
+    # (specs/logging-telemetry.md §4.6).
+    configure_logging(settings, "script", log_name="reindex")
+    with bind(request_id=new_id("reindex")):
+        _reindex(settings)
+
+
+def _reindex(settings: Settings) -> None:
+    start = time.perf_counter()
     engine = create_db_engine(settings.database_url)
     session_factory = sessionmaker(bind=engine)
 
@@ -81,6 +98,7 @@ def main() -> None:
         # single Postgres query batch can span multiple connections.
         connections = db.execute(select(SourceConnectionModel)).scalars().all()
         total = 0
+        total_chunks = 0
         for connection in connections:
             offset = 0
             while True:
@@ -103,6 +121,7 @@ def main() -> None:
                 chunks = load_chunks(db, [doc.id for doc in documents])
                 for doc in documents:
                     doc.chunks = chunks.get(doc.id, [])
+                    total_chunks += len(doc.chunks)
                 search_index.index_documents(
                     documents,
                     SourceType(connection.source_type),
@@ -111,7 +130,14 @@ def main() -> None:
                 )
                 total += len(documents)
                 offset += BATCH_SIZE
-        print(f"Reindexed {total} document(s) from Postgres into Elasticsearch.")
+        log_event(
+            logger,
+            "reindex.completed",
+            f"Reindexed {total} document(s) from Postgres into Elasticsearch",
+            documents=total,
+            chunks=total_chunks,
+            duration_ms=elapsed_ms(start),
+        )
     finally:
         db.close()
         es_client.close()

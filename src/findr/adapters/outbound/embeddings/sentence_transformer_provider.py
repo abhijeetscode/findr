@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from findr.adapters.outbound.elasticsearch.es_client import EMBEDDING_DIMS
+from findr.observability import log_event
+from findr.observability.setup import reclaim_console_handlers
+from findr.observability.events import elapsed_ms
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +38,22 @@ class SentenceTransformerEmbeddingProvider:
         # fake) don't pay torch's import cost.
         from sentence_transformers import SentenceTransformer
 
+        # transformers/huggingface_hub attach console handlers when first
+        # imported; send them to the log file before the model load logs
+        # anything (specs/logging-telemetry.md §4.7).
+        reclaim_console_handlers()
+
         device = detect_device()
-        logger.info("Loading embedding model %s on %s", model_name, device)
+        start = time.perf_counter()
         self._model = SentenceTransformer(model_name, device=device)
+        log_event(
+            logger,
+            "embedding.model.loaded",
+            f"Loaded embedding model {model_name} on {device}",
+            model=model_name,
+            device=device,
+            duration_ms=elapsed_ms(start),
+        )
         # Qwen3's native context is ~32k tokens; embedding that every sync is
         # far too slow, especially on CPU. Longer text is truncated (no chunking yet —
         # specs/semantic-search.md §1/§6).

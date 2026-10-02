@@ -1,8 +1,11 @@
 import logging
+import time
 from collections.abc import Callable
 
 from findr.application.workspaces.manage_workspaces import GetWorkspace
 from findr.domain.value_objects import SourceType
+from findr.observability import log_event
+from findr.observability.events import elapsed_ms
 from findr.ports.credential_store import CredentialStore
 from findr.ports.document_repository import DocumentRepository
 from findr.ports.file_storage import FileStorage
@@ -49,6 +52,7 @@ class DeleteWorkspace:
 
     def execute(self, workspace_id: int, user_id: int) -> None:
         GetWorkspace(self._workspaces).execute(workspace_id, user_id)
+        start = time.perf_counter()
 
         connections = self._connections.list_for_workspace(workspace_id)
         for connection in connections:
@@ -72,6 +76,14 @@ class DeleteWorkspace:
             except Exception:  # noqa: BLE001 - orphaned file, logged
                 logger.exception("Could not delete stored file %s", upload.storage_path)
         self._search_index.delete_workspace(workspace_id)
+        log_event(
+            logger,
+            "workspace.deleted",
+            workspace_id=workspace_id,
+            connections_deleted=len(connections),
+            uploads_deleted=len(uploads),
+            duration_ms=elapsed_ms(start),
+        )
 
     def _revoke(self, connection_id: int, source_type: SourceType) -> None:
         if source_type == SourceType.FILE:

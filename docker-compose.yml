@@ -10,9 +10,12 @@ services:
       FINDR_ELASTICSEARCH_URL: http://elasticsearch:9200
       FINDR_UPLOAD_STORAGE_ROOT: /data/uploads
       FINDR_REDIS_URL: redis://redis:6379/0
+      # Logs go to files only, one per process (specs/logging-telemetry.md §4.6).
+      FINDR_LOG_DIR: /data/logs
     volumes:
       - findr_uploads_data:/data/uploads
       - findr_model_cache:/data/hf-cache
+      - findr_logs_data:/data/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,9 +45,12 @@ services:
       FINDR_ELASTICSEARCH_URL: http://elasticsearch:9200
       FINDR_UPLOAD_STORAGE_ROOT: /data/uploads
       FINDR_REDIS_URL: redis://redis:6379/0
+      # Logs go to files only, one per process (specs/logging-telemetry.md §4.6).
+      FINDR_LOG_DIR: /data/logs
     volumes:
       - findr_uploads_data:/data/uploads
       - findr_model_cache:/data/hf-cache
+      - findr_logs_data:/data/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,3 +113,4 @@ volumes:
   findr_uploads_data:
   findr_model_cache:
   findr_redis_data:
+  findr_logs_data:

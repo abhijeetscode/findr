@@ -1,8 +1,13 @@
+import logging
+
 from findr.domain.exceptions import ConnectionNotFound
 from findr.domain.value_objects import ConnectionStatus
+from findr.observability import log_event
 from findr.ports.credential_store import CredentialStore
 from findr.ports.oauth_provider import OAuthProvider
 from findr.ports.source_connection_repo import SourceConnectionRepository
+
+logger = logging.getLogger(__name__)
 
 
 class DisconnectSource:
@@ -26,3 +31,10 @@ class DisconnectSource:
             self._oauth_provider.revoke(credentials)
         self._credential_store.delete(connection_id)
         self._connection_repo.update_status(connection_id, ConnectionStatus.DISCONNECTED)
+        log_event(
+            logger,
+            "source.disconnected",
+            source_type=connection.source_type.value,
+            connection_id=connection_id,
+            workspace_id=connection.workspace_id,
+        )

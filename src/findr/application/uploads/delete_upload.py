@@ -1,8 +1,13 @@
+import logging
+
 from findr.domain.exceptions import UploadNotFound
+from findr.observability import log_event
 from findr.ports.document_repository import DocumentRepository
 from findr.ports.file_storage import FileStorage
 from findr.ports.search_index import SearchIndex
 from findr.ports.uploaded_file_repository import UploadedFileRepository
+
+logger = logging.getLogger(__name__)
 
 
 class DeleteUpload:
@@ -41,3 +46,11 @@ class DeleteUpload:
             self._documents.delete_by_id(document.id)
             self._search_index.delete_documents(document.connection_id, [document.external_id])
         self._storage.delete(upload.storage_path)
+        log_event(
+            logger,
+            "upload.deleted",
+            upload_id=upload_id,
+            workspace_id=upload.workspace_id,
+            document_id=document.id if document is not None else None,
+            status=upload.status.value,
+        )

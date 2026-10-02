@@ -7,6 +7,7 @@ from findr.application.uploads.process_upload import (
     STALE_PROCESSING_AFTER,
 )
 from findr.domain.value_objects import UploadStatus
+from findr.observability import log_event
 from findr.ports.clock import Clock
 from findr.ports.unit_of_work import UnitOfWork
 from findr.ports.upload_queue import UploadQueue
@@ -64,4 +65,12 @@ class RequeueStaleUploads:
                 self._queue.enqueue(upload_id)
             except Exception:  # noqa: BLE001 - next sweep tries again
                 logger.exception("Could not re-enqueue upload %s", upload_id)
+        log_event(
+            logger,
+            "upload.sweep",
+            level=logging.INFO if stale else logging.DEBUG,
+            requeued=len(to_enqueue),
+            upload_ids=to_enqueue,
+            gave_up=len(stale) - len(to_enqueue),
+        )
         return to_enqueue

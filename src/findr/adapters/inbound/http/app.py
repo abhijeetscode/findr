@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -6,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import sessionmaker
 
+from findr.adapters.inbound.http.middleware import RequestLoggingMiddleware
 from findr.adapters.inbound.http.routers.auth_router import router as auth_router
 from findr.adapters.inbound.http.routers.documents_router import router as documents_router
 from findr.adapters.inbound.http.routers.search_router import router as search_router
@@ -32,12 +35,17 @@ from findr.adapters.taskiq.upload_queue_taskiq import TaskiqUploadQueue
 from findr.application.auth.register_user import RegisterUser
 from findr.config import Settings
 from findr.domain.exceptions import DuplicateUser
+from findr.observability import log_event
+from findr.observability.setup import configure_logging
+from findr.observability.events import elapsed_ms
 from findr.ports.embedding_provider import EmbeddingProvider
 from findr.ports.upload_queue import UploadQueue
 
 # src/findr/adapters/inbound/http/app.py -> parents[3] == src/findr/
 FINDR_PACKAGE_DIR = Path(__file__).resolve().parents[3]
 INDEX_HTML = FINDR_PACKAGE_DIR / "Unified Search Interface.html"
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_demo_user(session_factory: sessionmaker, settings: Settings) -> None:
@@ -76,21 +84,31 @@ async def stop_upload_queue() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
+    # First, so everything below (model load included) lands in the log
+    # file (specs/logging-telemetry.md §4.1).
+    configure_logging(settings, "api")
+
+    start = time.perf_counter()
     engine = create_db_engine(settings.database_url)
     init_db(engine)
+    db_init_ms = elapsed_ms(start)
     session_factory = sessionmaker(bind=engine)
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = session_factory
 
+    start = time.perf_counter()
     es_client = create_es_client(settings.elasticsearch_url)
     ensure_index(es_client, settings.elasticsearch_index)
+    es_ensure_index_ms = elapsed_ms(start)
     app.state.es_client = es_client
 
     # Loaded once and shared by request handlers and the scheduler — the
     # model is ~1GB+ in memory. Fails startup if it can't load, same as
     # Postgres/Elasticsearch (specs/semantic-search.md §6).
+    start = time.perf_counter()
     embedding_provider = build_embedding_provider(settings)
+    embedding_model_load_ms = elapsed_ms(start)
     app.state.embedding_provider = embedding_provider
 
     _ensure_demo_user(session_factory, settings)
@@ -108,6 +126,15 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
     app.state.scheduler = scheduler
+    log_event(
+        logger,
+        "app.started",
+        env=settings.environment,
+        db_init_ms=db_init_ms,
+        es_ensure_index_ms=es_ensure_index_ms,
+        embedding_model=settings.embedding_model,
+        embedding_model_load_ms=embedding_model_load_ms,
+    )
     try:
         yield
     finally:
@@ -115,9 +142,11 @@ async def lifespan(app: FastAPI):
         await stop_upload_queue()
         engine.dispose()
         es_client.close()
+        log_event(logger, "app.stopped")
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(RequestLoggingMiddleware)
 app.include_router(auth_router)
 app.include_router(search_router)
 app.include_router(sources_router)

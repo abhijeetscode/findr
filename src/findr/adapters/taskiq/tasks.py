@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 from elasticsearch import Elasticsearch
@@ -35,6 +36,9 @@ from findr.adapters.outbound.system_clock import SystemClock
 from findr.adapters.taskiq.broker import broker
 from findr.application.uploads.process_upload import Outcome, ProcessUpload
 from findr.config import Settings
+from findr.observability import bind, log_event, new_id
+from findr.observability.setup import configure_logging, reclaim_console_handlers
+from findr.observability.events import elapsed_ms
 from findr.ports.document_parser import DocumentParser
 from findr.ports.embedding_provider import EmbeddingProvider
 
@@ -84,9 +88,14 @@ def build_worker_resources(settings: Settings) -> WorkerResources:
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _startup(state: TaskiqState) -> None:
-    logging.basicConfig(level=logging.INFO)
-    state.resources = await asyncio.to_thread(build_worker_resources, Settings())
-    logger.info("Upload worker ready")
+    settings = Settings()
+    # First, so model loading is logged too (specs/logging-telemetry.md §4.1).
+    configure_logging(settings, "worker")
+    start = time.perf_counter()
+    state.resources = await asyncio.to_thread(build_worker_resources, settings)
+    # The model libraries add console handlers on first import.
+    reclaim_console_handlers()
+    log_event(logger, "worker.ready", "Upload worker ready", startup_ms=elapsed_ms(start))
 
 
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
@@ -121,14 +130,29 @@ def run_process_upload(resources: WorkerResources, upload_id: int) -> Outcome:
         db.close()
 
 
+def _request_id(context: Context) -> str:
+    """The id of the request (or sweep) that enqueued this upload, carried
+    as a message label; a fresh one if it has none."""
+    message = getattr(context, "message", None)
+    labels = getattr(message, "labels", None) or {}
+    return str(labels.get("request_id") or new_id("upload"))
+
+
+async def _requeue(upload_id: int, request_id: str) -> None:
+    await process_upload.kicker().with_labels(request_id=request_id).kiq(upload_id)
+
+
 @broker.task(task_name="findr.process_upload")
 async def process_upload(upload_id: int, context: Context = TaskiqDepends()) -> None:
     resources: WorkerResources = context.state.resources
-    logger.info("Processing upload %s", upload_id)
-    # CPU-bound and blocking: off the event loop, so the worker keeps its
-    # Redis connection alive during a minutes-long OCR run.
-    outcome = await asyncio.to_thread(run_process_upload, resources, upload_id)
-    logger.info("Upload %s: %s", upload_id, outcome.value)
-    if outcome == Outcome.RETRY:
-        await asyncio.sleep(RETRY_DELAY_SECONDS)
-        await process_upload.kiq(upload_id)
+    request_id = _request_id(context)
+    with bind(request_id=request_id, upload_id=upload_id):
+        logger.debug("Processing upload %s", upload_id)
+        # CPU-bound and blocking: off the event loop, so the worker keeps its
+        # Redis connection alive during a minutes-long OCR run. to_thread
+        # copies the bound log context into the thread.
+        outcome = await asyncio.to_thread(run_process_upload, resources, upload_id)
+        if outcome == Outcome.RETRY:
+            await asyncio.sleep(RETRY_DELAY_SECONDS)
+            # Same request id: every attempt of one upload shares it.
+            await _requeue(upload_id, request_id)

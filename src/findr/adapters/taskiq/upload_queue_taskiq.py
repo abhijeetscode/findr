@@ -4,6 +4,8 @@ import asyncio
 
 from taskiq import AsyncTaskiqDecoratedTask
 
+from findr.observability import current_fields
+
 # How long a caller waits for Redis to accept a message.
 _ENQUEUE_TIMEOUT_SECONDS = 10
 
@@ -23,5 +25,11 @@ class TaskiqUploadQueue:
         self._loop = loop
 
     def enqueue(self, upload_id: int) -> None:
-        future = asyncio.run_coroutine_threadsafe(self._task.kiq(upload_id), self._loop)
+        # The caller's request id travels as a message label, so the worker's
+        # log lines for this upload share it (specs/logging-telemetry.md §5).
+        kicker = self._task.kicker()
+        request_id = current_fields().get("request_id")
+        if request_id is not None:
+            kicker = kicker.with_labels(request_id=request_id)
+        future = asyncio.run_coroutine_threadsafe(kicker.kiq(upload_id), self._loop)
         future.result(timeout=_ENQUEUE_TIMEOUT_SECONDS)
