@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from findr.domain.entities import Document, SearchHit
+from findr.domain.entities import Document, SearchResults
 from findr.domain.value_objects import SourceType
 
 
@@ -8,8 +8,21 @@ class SearchIndex(Protocol):
     """Kept separate from DocumentRepository so a vector/semantic-search adapter
     can be added later without touching domain or application code."""
 
-    def search(self, user_id: int, workspace_id: int, query: str) -> list[SearchHit]:
-        """Only ever returns documents from this one workspace (and user) —
+    def search(
+        self,
+        user_id: int,
+        workspace_id: int,
+        query: str,
+        *,
+        offset: int,
+        limit: int,
+        max_results: int,
+    ) -> SearchResults:
+        """The results ranked `offset` to `offset + limit` among the top
+        `max_results` (specs/search-pagination.md §2, §5.2). The ranking is
+        the same for every slice, given the same data.
+
+        Only ever returns documents from this one workspace (and user) —
         see specs/workspaces.md §2. For paged files (PDF), each hit's `pages`
         lists the pages its match is on (specs/open-files-and-pdf-pages.md)."""
         ...

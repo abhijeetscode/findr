@@ -158,6 +158,18 @@ class SearchHit:
 
 
 @dataclass
+class SearchResults:
+    """One page of search results — see specs/search-pagination.md §5.1."""
+
+    # This page's hits, in rank order.
+    hits: list[SearchHit]
+    # How many results can be paged through (at most the search's limit).
+    total: int
+    # More matches exist than the limit lets anyone page through.
+    total_is_capped: bool
+
+
+@dataclass
 class Credentials:
     access_token: str
     refresh_token: str

@@ -7,7 +7,7 @@ from datetime import datetime
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
 
-from findr.domain.entities import Document, DocumentChunk, SearchHit
+from findr.domain.entities import Document, DocumentChunk, SearchHit, SearchResults
 from findr.domain.value_objects import SourceType
 from findr.observability import log_event
 from findr.observability.events import elapsed_ms
@@ -27,10 +27,11 @@ EMBEDDED_SOURCE_TYPES = frozenset({SourceType.FILE})
 # pre-chunking field on older indices).
 _SOURCE_EXCLUDES = ["chunks", "embedding"]
 
-_RESULT_SIZE = 50
 # Standard RRF constant (Cormack et al.; also Elasticsearch's default).
 _RRF_RANK_CONSTANT = 60
+# Floor and Elasticsearch's ceiling for the kNN shortlist (num_candidates).
 _KNN_NUM_CANDIDATES = 200
+_KNN_MAX_CANDIDATES = 10_000
 # Chunk fields carrying a match's page numbers; and the most matching chunks
 # read per document to collect them (Elasticsearch's default
 # index.max_inner_result_window). See specs/open-files-and-pdf-pages.md §2.1.
@@ -63,8 +64,10 @@ class ElasticsearchIndex:
     (specs/semantic-search.md §5). The fusion happens here, client-side,
     rather than via Elasticsearch's `rrf` retriever: that retriever is a
     paid-licence feature and returns 403 on the basic licence the
-    docker-compose cluster runs. Both legs go out in one `_msearch`; only
-    the BM25 leg carries `highlight`.
+    docker-compose cluster runs. Results are paged in two phases, each one
+    `_msearch` with both legs: rank the top N by id, then fetch details for
+    one page (specs/search-pagination.md §3). Only the BM25 leg carries
+    `highlight`.
 
     Semantic search covers uploaded files only (EMBEDDED_SOURCE_TYPES,
     specs/semantic-search.md §12), over one vector per chunk, stored nested
@@ -85,126 +88,207 @@ class ElasticsearchIndex:
         self._embedding_provider = embedding_provider
         self._min_similarity = min_similarity
 
-    def search(self, user_id: int, workspace_id: int, query: str) -> list[SearchHit]:
+    def search(
+        self,
+        user_id: int,
+        workspace_id: int,
+        query: str,
+        *,
+        offset: int,
+        limit: int,
+        max_results: int,
+    ) -> SearchResults:
+        """Two phases (specs/search-pagination.md §3): rank the top
+        `max_results` of both legs by id only and fuse them, then fetch
+        highlights, snippets and pages for just this page's documents."""
         if not query.strip():
-            return []
+            return SearchResults(hits=[], total=0, total_is_capped=False)
 
-        # Both the workspace and (as a second guard) the user, on both legs:
-        # one client's documents never appear in another client's search.
+        # Both the workspace and (as a second guard) the user, on both legs
+        # and in both phases: one client's documents never appear in another
+        # client's search.
         scope_filter = [
             {"term": {"workspace_id": workspace_id}},
             {"term": {"user_id": user_id}},
         ]
-        source_filter = {"excludes": _SOURCE_EXCLUDES}
-        bm25_body = {
-            "query": {
-                "bool": {
-                    "must": {
-                        "multi_match": {
-                            "query": query,
-                            "fields": ["subject^2", "sender", "body_text"],
-                        }
-                    },
-                    "filter": scope_filter,
-                    # Finds which chunks hold the keywords, only to read
-                    # their pages. Scores 0 and sits in `should` beside a
-                    # `must`, so it can't change what matches or the ranking.
-                    # A chunk needs every word: with OR, a common word like
-                    # "the" would mark nearly every page.
-                    "should": {
-                        "constant_score": {
-                            "filter": {
-                                "nested": {
-                                    "path": "chunks",
-                                    "query": {
-                                        "match": {
-                                            "chunks.text.search": {
-                                                "query": query,
-                                                "operator": "and",
-                                            }
-                                        }
-                                    },
-                                    "inner_hits": {
-                                        "name": _KEYWORD_PAGES_INNER_HITS,
-                                        "size": _MAX_PAGE_CHUNKS,
-                                        "_source": _PAGE_FIELDS,
-                                    },
-                                }
-                            },
-                            "boost": 0,
-                        }
-                    },
-                }
-            },
-            "highlight": {
-                "pre_tags": ["["],
-                "post_tags": ["]"],
-                "fields": {"body_text": {}, "subject": {}, "sender": {}},
-            },
-            "_source": source_filter,
-            "size": _RESULT_SIZE,
-        }
         start = time.perf_counter()
         query_vector = self._embedding_provider.embed_query(query)
         embed_ms = elapsed_ms(start)
-        knn_body = {
-            "knn": {
-                "field": "chunks.embedding",
-                "query_vector": query_vector,
-                "k": _RESULT_SIZE,
-                "num_candidates": _KNN_NUM_CANDIDATES,
-                "similarity": self._min_similarity,
-                # The source_type filter is explicit even though only these
-                # sources carry vectors, so stale vectors on anything else
-                # can never surface semantically (semantic-search.md §12.4).
-                "filter": [
-                    *scope_filter,
-                    {"terms": {"source_type": sorted(t.value for t in EMBEDDED_SOURCE_TYPES)}},
-                ],
-                # The best-matching chunk, for the snippet and its pages.
-                "inner_hits": {
-                    "size": 1,
-                    "_source": ["chunks.text", "chunks.kind", *_PAGE_FIELDS],
-                },
-            },
-            "_source": source_filter,
-            "size": _RESULT_SIZE,
-        }
-        response = self._client.msearch(
-            searches=[
-                {"index": self._index},
-                bm25_body,
-                {"index": self._index},
-                knn_body,
-            ]
+
+        # Phase 1: ranking. Ids only — no _source, highlight or inner hits.
+        start = time.perf_counter()
+        keyword_ranked, semantic_ranked = self._msearch(
+            self._keyword_body(query, scope_filter, size=max_results, details=False),
+            self._semantic_body(query_vector, scope_filter, k=max_results, details=False),
         )
-        legs = []
-        for leg in response["responses"]:
-            if "error" in leg:
-                raise RuntimeError(f"Elasticsearch search failed: {leg['error']}")
-            legs.append(leg["hits"]["hits"])
+        ranking_ms = elapsed_ms(start)
+        fused = _reciprocal_rank_fusion([keyword_ranked["hits"]["hits"], semantic_ranked["hits"]["hits"]])
+        keyword_total = keyword_ranked["hits"]["total"]
+        total_is_capped = (
+            keyword_total["value"] > max_results
+            or keyword_total.get("relation") == "gte"
+            or len(semantic_ranked["hits"]["hits"]) >= max_results
+        )
+        page = fused[offset : offset + limit]
+        page_ids = [raw["_id"] for raw, _ in page]
+
+        # Phase 2: details for this page only (skipped for an empty page).
+        start = time.perf_counter()
+        hits: list[SearchHit] = []
+        if page_ids:
+            keyword_details, semantic_details = self._msearch(
+                self._keyword_body(
+                    query, scope_filter, size=len(page_ids), details=True, ids=page_ids
+                ),
+                self._semantic_body(
+                    query_vector, scope_filter, k=len(page_ids), details=True, ids=page_ids
+                ),
+            )
+            hits = self._to_hits(
+                page, keyword_details["hits"]["hits"], semantic_details["hits"]["hits"]
+            )
         # Adapter-level detail behind search.executed (specs/logging-telemetry.md §6).
         log_event(
             logger,
             "search_index.searched",
             level=logging.DEBUG,
             embed_ms=embed_ms,
-            es_ms=max((leg.get("took", 0) for leg in response["responses"]), default=0),
-            keyword_hits=len(legs[0]),
-            semantic_hits=len(legs[1]),
+            ranking_ms=ranking_ms,
+            details_ms=elapsed_ms(start),
+            keyword_hits=len(keyword_ranked["hits"]["hits"]),
+            semantic_hits=len(semantic_ranked["hits"]["hits"]),
+            fused=len(fused),
         )
+        return SearchResults(hits=hits, total=len(fused), total_is_capped=total_is_capped)
 
-        matched_chunks = {raw["_id"]: _best_chunk_text(raw) for raw in legs[1]}
-        keyword_pages = {
-            raw["_id"]: _pages(raw, _KEYWORD_PAGES_INNER_HITS) for raw in legs[0]
+    def _msearch(self, keyword_body: dict, semantic_body: dict) -> list[dict]:
+        response = self._client.msearch(
+            searches=[
+                {"index": self._index},
+                keyword_body,
+                {"index": self._index},
+                semantic_body,
+            ]
+        )
+        legs = response["responses"]
+        for leg in legs:
+            if "error" in leg:
+                raise RuntimeError(f"Elasticsearch search failed: {leg['error']}")
+        return legs
+
+    def _keyword_body(
+        self,
+        query: str,
+        scope_filter: list[dict],
+        *,
+        size: int,
+        details: bool,
+        ids: list[str] | None = None,
+    ) -> dict:
+        """The BM25 leg. With `details`, it also finds the pages of matching
+        chunks and highlights the match; without, it only ranks."""
+        bool_query: dict = {
+            "must": {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["subject^2", "sender", "body_text"],
+                }
+            },
+            "filter": [*scope_filter, *_ids_filter(ids)],
         }
-        semantic_pages = {raw["_id"]: _pages(raw, "chunks") for raw in legs[1]}
+        if not details:
+            return {"query": {"bool": bool_query}, "_source": False, "size": size}
+        # Finds which chunks hold the keywords, only to read their pages.
+        # Scores 0 and sits in `should` beside a `must`, so it can't change
+        # what matches or the ranking. A chunk needs every word: with OR, a
+        # common word like "the" would mark nearly every page.
+        bool_query["should"] = {
+            "constant_score": {
+                "filter": {
+                    "nested": {
+                        "path": "chunks",
+                        "query": {
+                            "match": {
+                                "chunks.text.search": {"query": query, "operator": "and"}
+                            }
+                        },
+                        "inner_hits": {
+                            "name": _KEYWORD_PAGES_INNER_HITS,
+                            "size": _MAX_PAGE_CHUNKS,
+                            "_source": _PAGE_FIELDS,
+                        },
+                    }
+                },
+                "boost": 0,
+            }
+        }
+        return {
+            "query": {"bool": bool_query},
+            "highlight": {
+                "pre_tags": ["["],
+                "post_tags": ["]"],
+                "fields": {"body_text": {}, "subject": {}, "sender": {}},
+            },
+            "_source": {"excludes": _SOURCE_EXCLUDES},
+            "size": size,
+        }
 
+    def _semantic_body(
+        self,
+        query_vector: list[float],
+        scope_filter: list[dict],
+        *,
+        k: int,
+        details: bool,
+        ids: list[str] | None = None,
+    ) -> dict:
+        """The kNN leg. With `details`, it also returns the best-matching
+        chunk (for the snippet and its pages); without, it only ranks."""
+        knn: dict = {
+            "field": "chunks.embedding",
+            "query_vector": query_vector,
+            "k": k,
+            # The shortlist must be at least k; twice k keeps the approximate
+            # search from missing good neighbours (specs/search-pagination.md §3).
+            "num_candidates": min(max(2 * k, _KNN_NUM_CANDIDATES), _KNN_MAX_CANDIDATES),
+            "similarity": self._min_similarity,
+            # The source_type filter is explicit even though only these
+            # sources carry vectors, so stale vectors on anything else can
+            # never surface semantically (semantic-search.md §12.4).
+            "filter": [
+                *scope_filter,
+                {"terms": {"source_type": sorted(t.value for t in EMBEDDED_SOURCE_TYPES)}},
+                *_ids_filter(ids),
+            ],
+        }
+        if not details:
+            return {"knn": knn, "_source": False, "size": k}
+        knn["inner_hits"] = {
+            "size": 1,
+            "_source": ["chunks.text", "chunks.kind", *_PAGE_FIELDS],
+        }
+        return {"knn": knn, "_source": {"excludes": _SOURCE_EXCLUDES}, "size": k}
+
+    def _to_hits(
+        self, page: list[tuple[dict, float]], keyword_raw: list[dict], semantic_raw: list[dict]
+    ) -> list[SearchHit]:
+        """This page's hits in phase 1's order, with phase 1's RRF scores and
+        phase 2's details. A document neither leg returned this time (e.g.
+        deleted in between) is dropped."""
+        keyword_by_id = {raw["_id"]: raw for raw in keyword_raw}
+        semantic_by_id = {raw["_id"]: raw for raw in semantic_raw}
         hits: list[SearchHit] = []
-        for raw, score in _reciprocal_rank_fusion(legs)[:_RESULT_SIZE]:
+        for ranked, score in page:
+            doc_id = ranked["_id"]
+            keyword = keyword_by_id.get(doc_id)
+            semantic = semantic_by_id.get(doc_id)
+            # The BM25 hit when there is one: it carries `highlight`.
+            raw = keyword or semantic
+            if raw is None:
+                continue
             source = raw["_source"]
             document = Document(
-                id=int(raw["_id"]),
+                id=int(doc_id),
                 user_id=source["user_id"],
                 connection_id=source["connection_id"],
                 external_id=source["external_id"],
@@ -216,18 +300,20 @@ class ElasticsearchIndex:
                 thread_id=source.get("thread_id"),
                 workspace_id=_parse_int(source.get("workspace_id")),
             )
+            keyword_pages = _pages(keyword, _KEYWORD_PAGES_INNER_HITS) if keyword else []
+            semantic_pages = _pages(semantic, "chunks") if semantic else []
             hits.append(
                 SearchHit(
                     document=document,
                     snippet=_build_snippet(
                         raw.get("highlight", {}),
-                        matched_chunks.get(raw["_id"]),
+                        _best_chunk_text(semantic) if semantic else None,
                         source.get("body_text"),
                     ),
                     score=score,
                     source_type=SourceType(source["source_type"]),
                     external_account=source.get("external_account"),
-                    pages=keyword_pages.get(raw["_id"]) or semantic_pages.get(raw["_id"], []),
+                    pages=keyword_pages or semantic_pages,
                 )
             )
         return hits
@@ -321,6 +407,10 @@ class ElasticsearchIndex:
             conflicts="proceed",
             refresh=True,
         )
+
+
+def _ids_filter(ids: list[str] | None) -> list[dict]:
+    return [{"ids": {"values": ids}}] if ids is not None else []
 
 
 def _reciprocal_rank_fusion(legs: list[list[dict]]) -> list[tuple[dict, float]]:
