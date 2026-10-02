@@ -20,5 +20,10 @@ wheels/
 # macOS
 .DS_Store
 
-# Local upload storage when running outside Docker
-data/
+# Local upload storage and log files. data/logs/ itself is kept (empty) in
+# the repo so Docker never has to create the bind-mounted folder — it would
+# create it owned by root (specs/logging-telemetry.md §14).
+data/*
+!data/logs/
+data/logs/*
+!data/logs/.gitkeep
