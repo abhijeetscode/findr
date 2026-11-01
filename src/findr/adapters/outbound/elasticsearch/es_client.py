@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from elasticsearch import Elasticsearch
 
 # Qwen3-Embedding-0.6B's full output dimension. Every document ever indexed

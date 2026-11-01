@@ -10,7 +10,6 @@ Not a scheduled job — an operator-triggered action. Prints nothing: the
 result is the `reindex.completed` event in <FINDR_LOG_DIR>/reindex.log.
 """
 
-from __future__ import annotations
 
 import logging
 import sys

@@ -10,7 +10,6 @@ sync dependencies run in a threadpool on a *copy* of the context, so a
 the copy still points at the same dict.
 """
 
-from __future__ import annotations
 
 import secrets
 from collections.abc import Iterator

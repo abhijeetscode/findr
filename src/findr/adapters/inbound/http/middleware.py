@@ -4,7 +4,6 @@ Pure ASGI rather than BaseHTTPMiddleware, so streamed request and response
 bodies pass through untouched.
 """
 
-from __future__ import annotations
 
 import logging
 import re

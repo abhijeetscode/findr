@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from findr.adapters.outbound.gmail.gmail_connector import GmailConnector
 from findr.adapters.outbound.gmail.gmail_oauth_provider import GmailOAuthProvider
 from findr.config import Settings

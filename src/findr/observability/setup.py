@@ -2,7 +2,6 @@
 rotating file per process, nothing on the console
 (specs/logging-telemetry.md §4.1, §4.6, §4.7)."""
 
-from __future__ import annotations
 
 import logging
 import multiprocessing

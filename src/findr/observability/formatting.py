@@ -1,7 +1,6 @@
 """The JSON-lines format and the filters every record passes through
 (specs/logging-telemetry.md §3, §5, §8)."""
 
-from __future__ import annotations
 
 import json
 import logging
