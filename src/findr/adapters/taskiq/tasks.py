@@ -7,7 +7,6 @@ One process, one upload at a time: the work is CPU-bound (OCR, layout and
 table models, embeddings). See specs/upload-chunking.md §5.
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging

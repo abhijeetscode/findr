@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from taskiq import AsyncBroker, InMemoryBroker
 from taskiq_redis import RedisStreamBroker
 

@@ -4,7 +4,6 @@ Telemetry is fields on log events — durations, counts, outcomes — not a
 separate metrics API. Every event has a stable dotted name in `event`.
 """
 
-from __future__ import annotations
 
 import logging
 import time

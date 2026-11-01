@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from sqlalchemy import Engine, create_engine
 
 from findr.adapters.outbound.postgres.models import Base
